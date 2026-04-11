@@ -127,6 +127,7 @@ echo ""
 export TICKET_ID TICKET_TITLE TICKET_DESC
 export REPO_ROOT WORKTREE_PATH BRANCH
 export SYMPHONY_ROOT
+export SKILLS_ROOT="${HOME}/.claude/skills"
 export GITHUB_REPO="${GITHUB_REPO:-}"
 export PROJECT_PATH="${PROJECT_PATH:-$REPO_ROOT}"
 export DEFAULT_BRANCH
@@ -155,10 +156,10 @@ case "$FRESH" in
     PROMPT="$(envsubst < "$WORKFLOW_FILE")"
     ;;
   --feedback)
-    PROMPT="$(envsubst < "$SYMPHONY_ROOT/skills/resume/feedback.md")"
+    PROMPT="$(envsubst < "$SKILLS_ROOT/resume/feedback.md")"
     ;;
   *)
-    PROMPT="$(envsubst < "$SYMPHONY_ROOT/skills/resume/continue.md")"
+    PROMPT="$(envsubst < "$SKILLS_ROOT/resume/continue.md")"
     ;;
 esac
 
