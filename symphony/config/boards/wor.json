@@ -17,6 +17,7 @@
   "repos": [
     {
       "name": "workstream-mono",
+      "description": "NX monorepo，包含所有前端 MFE 子应用（hiring、on-demand-interviews、hris 等）和对应 BFF。绝大多数前端功能改动都在这里。",
       "path": "~/Documents/workstream-mono",
       "worktreesDir": "~/Documents/workstream-mono-worktrees",
       "defaultBranch": "master",
@@ -27,6 +28,76 @@
         "installCommand": "CI=true pnpm install --frozen-lockfile --quiet",
         "installCheck": "pnpm-lock.yaml"
       }
+    },
+    {
+      "name": "workstream-hr",
+      "description": "独立 React 应用，雇主端 HR 主产品（React 16 + antd4 + webpack，非 NX monorepo）。包含职位发布、候选人管理、面试流程模板、排班、申请人详情页等核心招聘功能。hiring 项目的主前端入口。",
+      "path": "~/Documents/workstream-hr",
+      "worktreesDir": "~/Documents/workstream-hr-worktrees",
+      "defaultBranch": "master",
+      "github": "helloworld1812/workstream-hr",
+      "isMono": false,
+      "setup": {
+        "symlinkNodeModules": false,
+        "installCommand": "nvm use && npm install",
+        "installCheck": "package-lock.json"
+      }
+    },
+    {
+      "name": "workstream-backend",
+      "description": "Rails 6 Ruby API，workstream 的主后端。数据库 PostgreSQL + Elasticsearch + Redis + Sidekiq。负责 Position / PositionApplication / HiringProcessTemplate 等核心数据模型。新增 API endpoint、数据库字段或后台任务时修改此 repo。",
+      "path": "~/Documents/workstream-backend",
+      "worktreesDir": "~/Documents/workstream-backend-worktrees",
+      "defaultBranch": "master",
+      "github": "helloworld1812/workstream-backend",
+      "isMono": false,
+      "setup": {
+        "symlinkNodeModules": false,
+        "installCommand": "bundle install",
+        "installCheck": "Gemfile.lock"
+      }
+    },
+    {
+      "name": "workstream-admin",
+      "description": "内部管理后台，React + antd2 + dva（部分已迁 react-query），Node 14。用于 Workstream 内部运营人员管理公司和客户数据。改动较少，通常只涉及运营工具需求。",
+      "path": "~/Documents/workstream-admin",
+      "worktreesDir": "~/Documents/workstream-admin-worktrees",
+      "defaultBranch": "master",
+      "github": "helloworld1812/workstream-admin",
+      "isMono": false,
+      "setup": {
+        "symlinkNodeModules": false,
+        "installCommand": "nvm use && npm install",
+        "installCheck": "package-lock.json"
+      }
+    },
+    {
+      "name": "workstream-jobs",
+      "description": "面向求职者的公开招聘网站，Express + Pug 服务端渲染 + jQuery + webpack，部分页面用 React。职位列表展示、候选人申请入口、onboarding 流程。",
+      "path": "~/Documents/workstream-jobs",
+      "worktreesDir": "~/Documents/workstream-jobs-worktrees",
+      "defaultBranch": "master",
+      "github": "helloworld1812/workstream-jobs",
+      "isMono": false,
+      "setup": {
+        "symlinkNodeModules": false,
+        "installCommand": "nvm use && npm install",
+        "installCheck": "package-lock.json"
+      }
+    },
+    {
+      "name": "workstream-terraform",
+      "description": "多环境 Terraform 基础设施配置（prod/qa/stage/dev）。AWS 资源管理。只有涉及云资源变更（EC2、RDS、S3、VPC 等）时才需要修改。",
+      "path": "~/Documents/workstream-terraform",
+      "worktreesDir": "~/Documents/workstream-terraform-worktrees",
+      "defaultBranch": "master",
+      "github": "helloworld1812/workstream-terraform",
+      "isMono": false,
+      "setup": {
+        "symlinkNodeModules": false,
+        "installCommand": "",
+        "installCheck": ""
+      }
     }
   ],
   "projects": [
@@ -35,7 +106,33 @@
       "name": "Symphony",
       "primaryRepo": "workstream-mono",
       "repos": [
-        { "name": "workstream-mono", "path": "~/Documents/workstream-mono/symphony" }
+        {
+          "name": "workstream-mono",
+          "path": "~/Documents/workstream-mono/symphony",
+          "hint": "Symphony 自治 agent 系统的脚本和配置，所有 WOR 自动化工作流相关改动都在这里"
+        }
+      ]
+    },
+    {
+      "linearProjectId": "7cf84d1a-f44c-4ea8-b878-c6ba0848abb3",
+      "name": "hiring",
+      "primaryRepo": "workstream-hr",
+      "repos": [
+        {
+          "name": "workstream-hr",
+          "path": "~/Documents/workstream-hr",
+          "hint": "雇主端 HR 主应用，包含职位发布、候选人管理、面试流程模板、排班等。hiring 项目绝大多数前端改动在这里"
+        },
+        {
+          "name": "workstream-mono",
+          "path": "~/Documents/workstream-mono/apps/hiring",
+          "hint": "较新的 MFE 招聘子应用，主要负责招聘活动（hiring events）创建和管理页面。新功能优先考虑放这里"
+        },
+        {
+          "name": "workstream-backend",
+          "path": "~/Documents/workstream-backend",
+          "hint": "Rails API 后端。新增接口、数据库字段（Position/PositionApplication/HiringProcessTemplate）、或后台任务时修改"
+        }
       ]
     },
     {
@@ -43,7 +140,11 @@
       "name": "On-Demand Interviews",
       "primaryRepo": "workstream-mono",
       "repos": [
-        { "name": "workstream-mono", "path": "~/Documents/workstream-mono/apps/on-demand-interviews" }
+        {
+          "name": "workstream-mono",
+          "path": "~/Documents/workstream-mono/apps/on-demand-interviews",
+          "hint": "ODI 前端 MFE 子应用，所有 ODI 相关 UI 和 BFF 改动在这里"
+        }
       ]
     },
     {
@@ -51,7 +152,11 @@
       "name": "ws ai components",
       "primaryRepo": "workstream-mono",
       "repos": [
-        { "name": "workstream-mono", "path": "~/Documents/workstream-mono/apps/ws-ai-components" }
+        {
+          "name": "workstream-mono",
+          "path": "~/Documents/workstream-mono/apps/ws-ai-components",
+          "hint": "AI 辅助代码生成的组件库（供内部 codegen 工具使用，非 AI 产品功能）"
+        }
       ]
     },
     {
@@ -59,7 +164,11 @@
       "name": "web mcp",
       "primaryRepo": "workstream-mono",
       "repos": [
-        { "name": "workstream-mono", "path": "~/Documents/workstream-mono" }
+        {
+          "name": "workstream-mono",
+          "path": "~/Documents/workstream-mono",
+          "hint": "MCP 相关工具和集成，改动分散在 monorepo 根目录各处"
+        }
       ]
     },
     {
@@ -67,23 +176,11 @@
       "name": "ws-mfe-parent",
       "primaryRepo": "workstream-mono",
       "repos": [
-        { "name": "workstream-mono", "path": "~/Documents/workstream-mono/apps/ws-mfe-parent" }
-      ]
-    },
-    {
-      "linearProjectId": "7cf84d1a-f44c-4ea8-b878-c6ba0848abb3",
-      "name": "hiring(mono)",
-      "primaryRepo": "workstream-mono",
-      "repos": [
-        { "name": "workstream-mono", "path": "~/Documents/workstream-mono/apps/hiring" }
-      ]
-    },
-    {
-      "linearProjectId": "0b2dfe3f-81d0-4006-8c1f-9144749cefc4",
-      "name": "HR(workstream-hr)",
-      "primaryRepo": "workstream-mono",
-      "repos": [
-        { "name": "workstream-mono", "path": "~/Documents/workstream-mono/apps/hris" }
+        {
+          "name": "workstream-mono",
+          "path": "~/Documents/workstream-mono/apps/ws-mfe-parent",
+          "hint": "MFE 容器应用（Module Federation host），负责路由、子应用注册和全局 shell"
+        }
       ]
     },
     {
@@ -91,7 +188,16 @@
       "name": "Frontend KTLO",
       "primaryRepo": "workstream-mono",
       "repos": [
-        { "name": "workstream-mono", "path": "~/Documents/workstream-mono" }
+        {
+          "name": "workstream-mono",
+          "path": "~/Documents/workstream-mono",
+          "hint": "前端技术债和维护类任务，改动范围不定，以 monorepo 根目录为起点探索"
+        },
+        {
+          "name": "workstream-hr",
+          "path": "~/Documents/workstream-hr",
+          "hint": "workstream-hr 独立应用的技术债维护，如依赖升级、lint 修复等"
+        }
       ]
     }
   ]
