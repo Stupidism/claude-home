@@ -31,7 +31,7 @@
     },
     {
       "name": "workstream-hr",
-      "description": "独立 React 应用，雇主端 HR 主产品（React 16 + antd4 + webpack，非 NX monorepo）。包含职位发布、候选人管理、面试流程模板、排班、申请人详情页等核心招聘功能。hiring 项目的主前端入口。",
+      "description": "hiring 产品的主体 MFE 子应用（qiankun 架构，有 bootstrap/mount/unmount 生命周期），React 16 + antd4 + webpack，独立 repo 非 NX monorepo。包含职位发布、候选人管理、面试流程模板、排班、申请人详情页等核心雇主端招聘功能。与 mono/apps/hiring 共同组成 hiring 产品。",
       "path": "~/Documents/workstream-hr",
       "worktreesDir": "~/Documents/workstream-hr-worktrees",
       "defaultBranch": "master",
@@ -121,12 +121,12 @@
         {
           "name": "workstream-hr",
           "path": "~/Documents/workstream-hr",
-          "hint": "雇主端 HR 主应用，包含职位发布、候选人管理、面试流程模板、排班等。hiring 项目绝大多数前端改动在这里"
+          "hint": "hiring 产品主体 MFE 子应用（qiankun），包含职位发布、候选人管理、面试流程模板、排班等核心功能。hiring 项目大多数前端改动在这里"
         },
         {
           "name": "workstream-mono",
           "path": "~/Documents/workstream-mono/apps/hiring",
-          "hint": "较新的 MFE 招聘子应用，主要负责招聘活动（hiring events）创建和管理页面。新功能优先考虑放这里"
+          "hint": "较新的 NX monorepo MFE 子应用，目前主要负责招聘活动（hiring events）创建和管理。与 workstream-hr 共同组成 hiring 产品，新架构功能放这里"
         },
         {
           "name": "workstream-backend",
@@ -167,7 +167,7 @@
         {
           "name": "workstream-mono",
           "path": "~/Documents/workstream-mono",
-          "hint": "MCP 相关工具和集成，改动分散在 monorepo 根目录各处"
+          "hint": "让 AI 工具感知当前 web 上下文并引导用户到正确 UI 状态的集成层。改动通常在 monorepo 的 BFF 层或共享 lib，读 ticket 后再定位具体路径"
         }
       ]
     },
@@ -196,7 +196,7 @@
         {
           "name": "workstream-hr",
           "path": "~/Documents/workstream-hr",
-          "hint": "workstream-hr 独立应用的技术债维护，如依赖升级、lint 修复等"
+          "hint": "workstream-hr MFE 子应用的技术债维护，如依赖升级、lint 修复等"
         }
       ]
     }
