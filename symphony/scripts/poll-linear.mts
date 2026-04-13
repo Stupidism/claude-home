@@ -820,21 +820,20 @@ ${codeReviewComment}
 SYMPHONY_EOF
    \`\`\`
 
-2. Post the comment to trigger the board's configured AI reviewer:
+2. Capture the current review count before posting, so you can identify only new reviews later:
+   \`\`\`bash
+   BEFORE_COUNT=$(gh pr view ${prNumber} --json reviews --jq '.reviews | length')
+   \`\`\`
+
+3. Post the comment to trigger the board's configured AI reviewer:
    \`\`\`bash
    gh pr comment ${prNumber} --body-file ${tmpCommentFile}
    \`\`\`
 
-3. Record the current time so you only count reviews posted *after* the trigger:
-   \`\`\`bash
-   TRIGGERED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-   \`\`\`
-
 4. Poll the PR reviews every 30 seconds, for up to 15 minutes, until the review bot responds.
-   Only count reviews submitted after the trigger comment:
+   Only inspect reviews that were added after the trigger (index >= BEFORE_COUNT):
    \`\`\`bash
-   gh pr view ${prNumber} --json reviews --jq --arg since "$TRIGGERED_AT" \
-     '[.reviews[] | select(.submittedAt > $since)] | map({login: .author.login, state: .state})'
+   gh pr view ${prNumber} --json reviews --jq ".reviews[$BEFORE_COUNT:] | map({login: .author.login, state: .state})"
    \`\`\`
    Repeat until you see a review with state APPROVED or CHANGES_REQUESTED, or 15 minutes elapse.
 
