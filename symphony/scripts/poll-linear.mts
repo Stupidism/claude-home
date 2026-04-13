@@ -274,6 +274,9 @@ async function resetReworkTicket(issue: Issue, board: BoardConfig): Promise<void
       'gh', ['pr', 'list', '--head', branch, '--json', 'number', '--jq', '.[0].number'],
       { encoding: 'utf8', cwd: repoPath }
     );
+    if (listResult.status !== 0) {
+      log(chalk.yellow(`[symphony] gh pr list failed for ${identifier}: ${listResult.stderr?.trim() || 'unknown error'}`));
+    }
     const prNumber = listResult.stdout.trim();
     if (prNumber && prNumber !== 'null') {
       const closeResult = child_process.spawnSync('gh', ['pr', 'close', prNumber, '--delete-branch'], { encoding: 'utf8', cwd: repoPath });
@@ -843,7 +846,9 @@ async function poll(): Promise<void> {
 
     // Kill agents whose tickets moved out of active states
     const SETTLE_MS = 30_000;
-    const activeInBoard = new Set([...inProgressTickets.map((t) => t.identifier), ...mergingTickets.map((t) => t.identifier), ...reworkTickets.map((t) => t.identifier)]);
+    // Rework tickets are intentionally excluded: agents for tickets moved to Rework
+    // should be stopped so resetReworkTicket() can run on the next poll cycle.
+    const activeInBoard = new Set([...inProgressTickets.map((t) => t.identifier), ...mergingTickets.map((t) => t.identifier)]);
     for (const [identifier, agent] of runningAgents) {
       if (agent.boardName !== board.name) continue;
       if (Date.now() - agent.spawnedAt < SETTLE_MS) continue;
