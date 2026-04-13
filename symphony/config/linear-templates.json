@@ -1,0 +1,37 @@
+{
+  "_comment": "Source-of-truth for Linear issue templates. Run the linear-template skill to sync these to Linear.",
+  "_lastSynced": "2026-04-13",
+  "teamId": "01ff1a40-98ea-4704-9fd8-b259c395878d",
+  "templates": [
+    {
+      "id": "3b6cd750-3fac-4eb5-ad46-d8537169f51b",
+      "name": "Feature",
+      "description": "Standard template for new features and enhancements",
+      "type": "issue",
+      "templateData": {
+        "title": "",
+        "descriptionMarkdown": "## Context\n\n<why this work is needed>\n\n## Requirements\n\n- [ ] Requirement 1\n- [ ] Requirement 2\n\n## Acceptance Criteria\n\n- [ ] AC 1: <specific, testable condition>\n- [ ] AC 2: <specific, testable condition>\n\n## Figma\n\n<design link — required for UI tickets>\n\n## Scope\n\nApp/Service: <hris | payroll | hiring | payroll-backend | ...>"
+      }
+    },
+    {
+      "id": "ae494f4b-ef38-4579-9e26-63cbfcb3ad81",
+      "name": "Bug",
+      "description": "Template for bug reports and fixes",
+      "type": "issue",
+      "templateData": {
+        "title": "",
+        "descriptionMarkdown": "## Context\n\n<what is broken and why it matters>\n\n## Steps to Reproduce\n\n1. Step 1\n2. Step 2\n3. Step 3\n\n## Expected Behavior\n\n<what should happen>\n\n## Actual Behavior\n\n<what actually happens>\n\n## Acceptance Criteria\n\n- [ ] AC 1: <the bug no longer reproduces under stated conditions>\n- [ ] AC 2: <regression test added or equivalent coverage confirmed>\n\n## Scope\n\nApp/Service: <hris | payroll | hiring | payroll-backend | ...>\n\n## Environment\n\n- [ ] Production\n- [ ] Staging\n- [ ] Dev"
+      }
+    },
+    {
+      "id": "1a3d4ebb-7d5d-4952-8fe6-55d215dde00a",
+      "name": "Chore",
+      "description": "Template for infrastructure, tooling, and maintenance tasks",
+      "type": "issue",
+      "templateData": {
+        "title": "",
+        "descriptionMarkdown": "## Context\n\n<why this maintenance/tooling work is needed>\n\n## Requirements\n\n- [ ] Requirement 1\n- [ ] Requirement 2\n\n## Acceptance Criteria\n\n- [ ] AC 1: <specific, verifiable outcome>\n- [ ] AC 2: <specific, verifiable outcome>\n\n## Scope\n\nApp/Service: <hris | payroll | hiring | payroll-backend | repo | ci | ...>"
+      }
+    }
+  ]
+}
