@@ -1,8 +1,8 @@
 # claude-home
 
-Private configuration repo for Claude Code. Contains global instructions, autonomous agent system (Symphony), and shared skills.
+A personal Claude Code configuration repo — global instructions, an autonomous agent system (Symphony), and shared skills, all version-controlled and portable across machines.
 
-> **Not for public sharing** — contains personal preferences, team-specific skills, and pointers to internal tooling.
+**Want to set up your own?** Fork this repo, point `~/.claude` at your fork, and customize for your stack. The Symphony system is designed to be team- and repo-agnostic: add your own board config under `symphony/config/boards/` and it works with any Linear team and any git repo.
 
 ## Structure
 
@@ -17,16 +17,18 @@ Private configuration repo for Claude Code. Contains global instructions, autono
 
 ## Setup
 
-### 1. Clone this repo
+### 1. Fork and clone
+
+**Fork** `Stupidism/claude-home` on GitHub, then clone your fork:
 
 ```bash
-git clone git@github.com:Stupidism/claude-home.git ~/.claude
+git clone git@github.com:YOUR_USERNAME/claude-home.git ~/.claude
 ```
 
 > If `~/.claude` already exists (Claude Code creates it on first run), move or merge it first:
 > ```bash
 > mv ~/.claude ~/.claude.bak
-> git clone git@github.com:Stupidism/claude-home.git ~/.claude
+> git clone git@github.com:YOUR_USERNAME/claude-home.git ~/.claude
 > cp -n ~/.claude.bak/settings.json ~/.claude/  # restore local settings if needed
 > ```
 
@@ -43,9 +45,14 @@ cp ~/.claude/symphony/secrets.env.example ~/.claude/symphony/secrets.env
 # Edit secrets.env and fill in LINEAR_API_KEY
 ```
 
-### 4. Configure your assignee ID
+### 4. Customize for your setup
 
-Edit `~/.claude/symphony/config/symphony.json` and set `assigneeId` to your Linear user ID.
+- **`symphony/config/symphony.json`** — set `assigneeId` to your Linear user ID
+- **`symphony/config/boards/`** — replace or add board files for your Linear teams and repos
+- **`CLAUDE.md`** — update language preferences and any personal rules
+- **`skills/`** — add, remove, or edit skills to match your workflow
+
+The Workstream-specific board (`boards/wor.json`) and skills are included as a reference implementation. Adapt or delete them as needed.
 
 ---
 
