@@ -24,3 +24,6 @@ settings.local.json
 
 # Symphony secrets
 symphony/secrets.env
+
+# Image cache
+image-cache/
