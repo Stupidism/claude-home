@@ -13,6 +13,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as child_process from 'node:child_process';
+import * as readline from 'node:readline';
 import chalk from 'chalk';
 import Table from 'cli-table3';
 
@@ -203,6 +204,25 @@ async function fetchTicketStateId(board: BoardConfig, identifier: string): Promi
     { teamId: board.teamId, identifier }
   );
   return data.team.issues.nodes[0]?.state?.id ?? null;
+}
+
+async function fetchTicketByIdentifier(board: BoardConfig, identifier: string): Promise<Issue | null> {
+  const data = await linearQuery<{ team: { issues: { nodes: Issue[] } } }>(
+    `query GetTicketByIdentifier($teamId: String!, $identifier: String!) {
+      team(id: $teamId) {
+        issues(filter: { identifier: { eq: $identifier } }, first: 1) {
+          nodes {
+            id identifier title description url
+            state { id name }
+            assignee { id name }
+            project { id name }
+          }
+        }
+      }
+    }`,
+    { teamId: board.teamId, identifier }
+  );
+  return data.team.issues.nodes[0] ?? null;
 }
 
 // ── Resolve ticket → repo ─────────────────────────────────────────────────────
@@ -403,6 +423,7 @@ function buildDashboard(updatedAt: string): string {
   }
 
   out += `\n  ${chalk.dim(`Updated ${updatedAt}  •  agents ${runningAgents.size}/${MAX_CONCURRENT}  •  boards: ${boards.map((b) => b.ticketPrefix).join(', ')}  •  next poll in ${POLL_INTERVAL_MS / 1000}s`)}`;
+  out += `\n  ${chalk.dim(`Type ${chalk.white('resume <id>')} to force-open a session  •  ${chalk.white('help')} for commands`)}`;
   return out;
 }
 
@@ -429,6 +450,123 @@ function timestamp(): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ── Force-resume command ──────────────────────────────────────────────────────
+
+/**
+ * Find the board responsible for a ticket by matching its prefix (e.g. "WOR" → WOR board).
+ */
+function boardForIdentifier(identifier: string): BoardConfig | null {
+  const prefix = identifier.split('-')[0]?.toUpperCase() ?? '';
+  return boards.find((b) => b.ticketPrefix.toUpperCase() === prefix) ?? null;
+}
+
+/**
+ * Force-open a session for any ticket by identifier, regardless of current Linear state.
+ *   - Already running → no-op (logged)
+ *   - Human Review / In Review / Rework → moves to In Progress, spawns in feedback mode
+ *   - In Progress (no agent) → spawns in continue mode
+ *   - Any other state → moves to In Progress, spawns in continue mode
+ */
+async function forceResumeTicket(identifier: string): Promise<void> {
+  const upper = identifier.toUpperCase();
+
+  if (runningAgents.has(upper)) {
+    log(chalk.yellow(`[${timestamp()}] ⏭ ${upper} already has a running agent — skipping`));
+    return;
+  }
+
+  const board = boardForIdentifier(upper);
+  if (!board) {
+    log(chalk.red(`[${timestamp()}] ✗ No board found for prefix of "${upper}" — check config`));
+    return;
+  }
+
+  let ticket: Issue | null;
+  try {
+    ticket = await fetchTicketByIdentifier(board, upper);
+  } catch (err) {
+    log(chalk.red(`[${timestamp()}] ✗ Failed to fetch ${upper}: ${err}`));
+    return;
+  }
+
+  if (!ticket) {
+    log(chalk.red(`[${timestamp()}] ✗ Ticket ${upper} not found in board "${board.name}"`));
+    return;
+  }
+
+  const stateName = ticket.state.name;
+  log(chalk.cyan(`[${timestamp()}] ▶ Force-resuming`) + ` ${chalk.bold(upper)} (state: ${stateName})`);
+
+  // Clear previous failure count so the agent gets a fresh attempt
+  failureCounts.delete(upper);
+
+  // Move to In Progress if not already there
+  if (ticket.state.id !== board.states.inProgress) {
+    try {
+      await moveToInProgress(board, ticket.id, ticket.identifier);
+    } catch (err) {
+      log(chalk.red(`[${timestamp()}] ✗ Failed to move ${upper} to In Progress: ${err}`));
+      return;
+    }
+  }
+
+  // Use feedback mode when coming from a review state so the agent reads all comments
+  const fromReview = stateName === 'Human Review' || stateName === 'In Review' || stateName === 'Rework';
+  const mode: SpawnMode = fromReview ? 'feedback' : 'continue';
+
+  spawnAgent(ticket, board, mode);
+}
+
+/**
+ * Set up a readline-based interactive command handler on stdin.
+ * Only active when stdin is a TTY (not piped/redirected).
+ *
+ * Commands:
+ *   resume <id>   — force-open a session (e.g. resume WOR-53)
+ *   r <id>        — shorthand for resume
+ *   <id>          — bare ticket ID (e.g. WOR-53)
+ *   help / h / ?  — show available commands
+ */
+function setupInteractiveCommands(): void {
+  if (!process.stdin.isTTY) return;
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    terminal: false, // don't echo or add readline's own prompt
+  });
+
+  rl.on('line', async (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+
+    const resumeMatch =
+      trimmed.match(/^(?:resume|r)\s+([A-Z]+-\d+)$/i) ??
+      trimmed.match(/^([A-Z]+-\d+)$/i);
+
+    if (resumeMatch) {
+      await forceResumeTicket(resumeMatch[1]);
+      renderDashboard();
+      return;
+    }
+
+    if (trimmed === 'help' || trimmed === 'h' || trimmed === '?') {
+      log(chalk.bold.white('Interactive commands:'));
+      log(`  ${chalk.cyan('resume <id>')}  Force-open a session  (e.g. ${chalk.cyan('resume WOR-53')})`);
+      log(`  ${chalk.cyan('r <id>')}       Shorthand for resume`);
+      log(`  ${chalk.cyan('<id>')}         Bare ticket ID  (e.g. ${chalk.cyan('WOR-53')})`);
+      log(`  ${chalk.cyan('Ctrl+C')}       Shut down poller`);
+      renderDashboard();
+      return;
+    }
+
+    log(chalk.dim(`[symphony] Unknown command: "${trimmed}" — type "help" for commands`));
+    renderDashboard();
+  });
+
+  // Don't let readline close the process when stdin ends
+  rl.on('close', () => {});
 }
 
 // ── Poller singleton lock ─────────────────────────────────────────────────────
@@ -1136,8 +1274,14 @@ console.log(`  ${chalk.dim('Max agents:')}  ${MAX_CONCURRENT}`);
 console.log(`  ${chalk.dim('Poll:')}        every ${POLL_INTERVAL_MS / 1000}s`);
 if (DRY_RUN) console.log(chalk.yellow('  [DRY RUN MODE — no agents will be spawned]'));
 console.log('');
-console.log(chalk.dim('  Ctrl+C to stop safely'));
+console.log(
+  chalk.dim(
+    `  ${chalk.white('resume <id>')} to force-open a session  •  ${chalk.white('help')} for commands  •  Ctrl+C to stop`
+  )
+);
 console.log('');
+
+setupInteractiveCommands();
 
 while (true) {
   // If a rate-limit pause is active, sleep in-place until the window expires
