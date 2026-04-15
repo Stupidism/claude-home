@@ -1,41 +1,7 @@
-# Claude runtime data — not for version control
-backups/
-cache/
-debug/
-downloads/
-file-history/
-history.jsonl
-mcp-needs-auth-cache.json
-paste-cache/
-plans/
-plugins/
-projects/
-session-env/
-sessions/
-shell-snapshots/
-telemetry/
-todos/
-transcripts/
-usage-data/
+# Ignore everything by default
+*
 
-# Local/machine-specific settings
-settings.json
-settings.local.json
-remote-settings.json
-
-# Symphony secrets
-symphony/secrets.env
-
-# Image cache
-image-cache/
-
-# Local tooling
-.rtk/
-RTK.md
-hooks/
-memory/
-
-# These files live at project root (~), not here — symlinks only
-README.md
-CLAUDE.md
-WORKFLOW.md
+# Version-controlled exceptions
+!.gitignore
+!skills/
+!skills/**
