@@ -21,6 +21,7 @@ usage-data/
 # Local/machine-specific settings
 settings.json
 settings.local.json
+remote-settings.json
 
 # Symphony secrets
 symphony/secrets.env
