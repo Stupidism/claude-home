@@ -83,11 +83,16 @@
       color: #ddd;
     }
     .reveal .slides section { padding: 20px 40px; }
-    /* Allow overflowing slides to scroll */
+    /* Allow overflowing slides to scroll without showing scrollbar */
     .reveal .slides section {
       overflow-y: auto;
       max-height: 100%;
       box-sizing: border-box;
+      scrollbar-width: none; /* Firefox */
+      -ms-overflow-style: none; /* IE/Edge */
+    }
+    .reveal .slides section::-webkit-scrollbar {
+      display: none; /* Chrome/Safari */
     }
   </style>
 </head>
@@ -847,7 +852,7 @@ claude \
           <ul>
             <li>Ambiguous or under-specified tickets</li>
             <li>Novel architecture decisions</li>
-            <li>Cross-repo coordination</li>
+            <li>Multi-team product decisions</li>
             <li>Debugging flaky E2E tests</li>
           </ul>
         </div>
@@ -1128,7 +1133,7 @@ claude \
           </div>
           <div class="card green" style="min-width:180px">
             <h3>Slides</h3>
-            <p class="dim">symphony-learn.vercel.app</p>
+            <p class="dim">symphony-ppt.vercel.app</p>
           </div>
         </div>
         <p style="margin-top:36px;color:var(--dim);font-size:0.6em">Made with Reveal.js · Sun Feng · 2026</p>
@@ -1151,7 +1156,7 @@ claude \
     width: 1200,
     height: 700,
     margin: 0.04,
-    scrollActivationWidth: null,
+    scrollActivationWidth: 640,
   });
 </script>
 </body>
