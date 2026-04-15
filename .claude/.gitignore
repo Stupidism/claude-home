@@ -34,5 +34,7 @@ RTK.md
 hooks/
 memory/
 
-# README lives at project root (~), not here
+# These files live at project root (~), not here — symlinks only
 README.md
+CLAUDE.md
+WORKFLOW.md

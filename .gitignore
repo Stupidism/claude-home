@@ -3,6 +3,9 @@
 
 # Root exceptions
 !.gitignore
+!README.md
+!CLAUDE.md
+!WORKFLOW.md
 
 # .claude config directory — subdirectory .gitignore handles runtime exclusions
 !.claude/
@@ -11,6 +14,6 @@
 # symphony automation — symphony/.gitignore handles runtime exclusions
 !symphony/
 !symphony/**
-# Local overrides are machine-specific and must not be committed
-symphony/config/boards/*.local.json
-symphony/config/symphony.local.json
+# Personal config is machine-specific and must not be committed
+symphony/config/
+symphony/config/**
