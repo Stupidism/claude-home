@@ -1,13 +1,13 @@
 ---
 name: linear
-description: All Linear API operations for WOR tickets — state transitions, workpad comment create/update/read, and the ticket format reference. Read this whenever you need to interact with Linear.
+description: All Linear API operations for Linear tickets — state transitions, workpad comment create/update/read, and the ticket format reference. Read this whenever you need to interact with Linear.
 ---
 
-# Linear Operations for WOR Tickets
+# Linear Operations
 
 > ⚠️ **NEVER use `mcp__linear-server__*` tools** — they require interactive OAuth and will always fail in autonomous mode. Use only the curl commands below.
 
-WOR tickets live in **Linear** (not Jira). Use the curl commands below.
+All ticket operations go through Linear. Use the curl commands below.
 `$LINEAR_API_KEY` and `$TICKET_ID` are already set in the Symphony environment.
 
 ---
@@ -62,7 +62,7 @@ The workpad is a **single persistent comment** on the Linear ticket. It is the s
 **Template:**
 
 ````md
-## Claude Workpad — WOR-XX
+## Claude Workpad — $TICKET_ID
 
 ```text
 <hostname>:<abs-worktree-path>@<short-sha>
@@ -136,6 +136,76 @@ curl -s -X POST https://api.linear.app/graphql \
   -H "Authorization: $LINEAR_API_KEY" \
   -H "Content-Type: application/json" \
   -d "{\"query\": \"mutation { commentUpdate(id: \\\"${COMMENT_ID}\\\", input: { body: \\\"${UPDATED_BODY}\\\" }) { success } }\"}"
+```
+
+---
+
+## Create a Linear Ticket
+
+Use when you need to file a new ticket (e.g. a sub-task split off from the current one).
+
+### Step 1 — Get the team's state UUID for Backlog
+
+```bash
+curl -s -X POST https://api.linear.app/graphql \
+  -H "Authorization: $LINEAR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "{ workflowStates(filter: { team: { id: { eq: \"'$TEAM_ID'\" } }, name: { eq: \"Backlog\" } }) { nodes { id name } } }"}' \
+  | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); console.log(d.data.workflowStates.nodes[0]?.id)"
+```
+
+`$TEAM_ID` is the `teamId` in the board config (e.g. `wor.json`).
+
+### Step 2 — Choose a template
+
+Read `$SYMPHONY_ROOT/config/linear-templates.json`. Pick the template that matches the ticket type:
+
+| Type    | Use when                                                         |
+|---------|------------------------------------------------------------------|
+| Feature | New functionality or enhancement                                 |
+| Bug     | Something is broken                                              |
+| Chore   | Infrastructure, tooling, dependency updates, maintenance         |
+
+### Step 3 — Fill in the template body
+
+Use the `descriptionMarkdown` from the chosen template. Replace placeholders (`<why this work is needed>`, `<specific, testable condition>`, etc.) with the actual content. Do NOT leave placeholder text in the final ticket.
+
+### Step 4 — Create the issue
+
+```bash
+# Set these variables:
+TEAM_ID="<from board config>"
+STATE_ID="<backlog state UUID from Step 1>"
+TITLE="<short imperative title, e.g. 'add retry logic to webhook handler'>"
+DESCRIPTION="<filled-in template body — escape newlines as \\n, quotes as \\\">"
+PRIORITY=0  # 0=No priority, 1=Urgent, 2=High, 3=Medium, 4=Low
+LABEL_ID=""  # optional: Linear label UUID
+
+curl -s -X POST https://api.linear.app/graphql \
+  -H "Authorization: $LINEAR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"query\": \"mutation { issueCreate(input: { teamId: \\\"${TEAM_ID}\\\", stateId: \\\"${STATE_ID}\\\", title: \\\"${TITLE}\\\", description: \\\"${DESCRIPTION}\\\", priority: ${PRIORITY} }) { success issue { id identifier url } } }\"}" \
+  | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); const i=d.data.issueCreate.issue; console.log('Created:', i.identifier, i.url)"
+```
+
+### Step 5 — Link to parent (optional)
+
+If this is a sub-task of the current ticket, link it:
+
+```bash
+PARENT_TICKET_UUID=$(curl -s -X POST https://api.linear.app/graphql \
+  -H "Authorization: $LINEAR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"query\": \"{ issue(id: \\\"${TICKET_ID}\\\") { id } }\"}" \
+  | node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).data.issue.id)")
+
+# Use the new issue's UUID returned from Step 4
+NEW_ISSUE_UUID="<uuid from create response>"
+
+curl -s -X POST https://api.linear.app/graphql \
+  -H "Authorization: $LINEAR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"query\": \"mutation { issueUpdate(id: \\\"${NEW_ISSUE_UUID}\\\", input: { parentId: \\\"${PARENT_TICKET_UUID}\\\" }) { success } }\"}"
 ```
 
 ---

@@ -22,8 +22,9 @@ gh api repos/$GITHUB_REPO/pulls/"$PR_NUMBER"/comments \
   --jq '.[] | "\(.path):\(.line) — \(.body)"'
 
 # 3. Unresolved review threads
+OWNER="${GITHUB_REPO%%/*}" REPO_NAME="${GITHUB_REPO##*/}"
 gh api graphql -f query='
-{ repository(owner:"helloworld1812",name:"workstream-mono") {
+{ repository(owner:"'"$OWNER"'",name:"'"$REPO_NAME"'") {
     pullRequest(number:'"$PR_NUMBER"') {
       reviewThreads(first:100) { nodes {
         isResolved

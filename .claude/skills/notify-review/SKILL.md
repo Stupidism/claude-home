@@ -18,7 +18,7 @@ Then compose and display the message for the user to copy.
 ## Gathering Context
 
 1. Read `$SKILLS_ROOT/prime-project/session-state.md` for:
-   - **JIRA ID**
+   - **Ticket ID**
    - **Project name** — to load the project config
 
 2. Read `$SKILLS_ROOT/prime-project/project-configs/{project-name}.json` for:
@@ -36,7 +36,7 @@ Use the `messageTemplate` from the project config. The template already contains
 - `{pr_url}` — The PR URL
 - `{pr_description}` — A short description like "to add processing period support" or "to fix overtime calculation"
 - `{pr_action}` — One of: `fixes`, `closes`, `implements` (ask user or infer from commit type)
-- `{jira_id}` — The JIRA ticket ID (e.g. `PAYR-1234`)
+- `{ticket_id}` — The ticket ID (e.g. `TEAM-1234`)
 
 **Ask the user** to provide or confirm the `pr_description` and `pr_action`.
 

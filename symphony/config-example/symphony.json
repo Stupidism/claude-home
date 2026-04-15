@@ -1,0 +1,12 @@
+{
+  "_comment": "Copy this file to config/symphony.json and fill in your values.",
+  "assigneeId": "YOUR_LINEAR_USER_UUID",
+  "maxConcurrent": 3,
+  "pollIntervalSeconds": 60,
+  "remoteControl": false,
+  "preferences": {
+    "personalLanguage": "English",
+    "workLanguage": "English",
+    "neverUseLanguage": ""
+  }
+}

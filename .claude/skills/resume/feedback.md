@@ -14,7 +14,6 @@ curl -s -X POST https://api.linear.app/graphql \
   | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); d.data.issue.comments.nodes.sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)).slice(0,5).reverse().forEach(c=>console.log(c.createdAt, c.user?.name??'unknown', c.body))"
 ```
 
-If `$TICKET_SYSTEM` is `jira`: use the Jira MCP tool to read comments.
 
 ## 2. Check GitHub PR comments
 
@@ -32,7 +31,8 @@ if [ -n "$PR_NUMBER" ]; then
     --jq '.[] | "\(.path):\(.line // .original_line) — \(.user.login): \(.body)"'
 
   # Unresolved review threads
-  gh api graphql -f query='{ repository(owner:"helloworld1812",name:"workstream-mono") { pullRequest(number:'"$PR_NUMBER"') { reviewThreads(first:100) { nodes { isResolved comments(first:3) { nodes { body path line author { login } } } } } } } }' \
+  OWNER="${GITHUB_REPO%%/*}" REPO_NAME="${GITHUB_REPO##*/}"
+  gh api graphql -f query='{ repository(owner:"'"$OWNER"'",name:"'"$REPO_NAME"'") { pullRequest(number:'"$PR_NUMBER"') { reviewThreads(first:100) { nodes { isResolved comments(first:3) { nodes { body path line author { login } } } } } } } }' \
     --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved==false) | .comments.nodes[] | "\(.path):\(.line) — \(.author.login): \(.body)"'
 
   # CI status

@@ -60,8 +60,7 @@ After the Figma audit (or, if no Figma, after reading the ticket), estimate the 
 
 Find or create the single persistent **Claude Workpad** comment on the ticket.
 
-- If `$TICKET_SYSTEM` is `linear`: read `$SKILLS_ROOT/linear/SKILL.md` for the workpad template and API commands
-- If `$TICKET_SYSTEM` is `jira`: use the Jira MCP tool to add a comment
+- Read `$SKILLS_ROOT/linear/SKILL.md` for the workpad template and API commands
 
 **Rules:**
 

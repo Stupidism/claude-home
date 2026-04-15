@@ -1,26 +1,36 @@
 ---
 name: commit-changes
-description: Use when the user says "commit", "commit changes", "save progress", or wants to create a git commit. Composes a conventional commit message with the correct scope and JIRA ID.
+description: Use when the user says "commit", "commit changes", "save progress", or wants to create a git commit. Composes a conventional commit message with the correct scope and ticket ID.
 ---
 
 # Commit Changes
 
-Create a well-formatted conventional commit with the correct scope and JIRA ID.
+Create a well-formatted conventional commit with the correct scope and ticket ID.
 
 ## Gathering Context
 
 1. Read `$SKILLS_ROOT/prime-project/session-state.md` for:
-   - **JIRA ID** — if not found, ask the user
+   - **Ticket ID** — if not found, ask the user
    - **Project name** — to load the project config
 
 2. Read `$SKILLS_ROOT/prime-project/project-configs/{project-name}.json` for:
    - **commitScope** — the scope to use in the commit message
 
-3. If neither session state nor project config is available, ask the user for the scope and JIRA ID directly. The skill works standalone.
+3. If neither session state nor project config is available, ask the user for the scope and ticket ID directly. The skill works standalone.
+
+## claude-home Repo
+
+When working in the claude-home repo (detected when the git remote is `claude-home` or the repo root is `~`), only stage whitelisted paths — the home directory contains non-repo files that must never be staged:
+
+```bash
+git add .claude/ symphony/ README.md
+```
+
+Do **not** use `git add -u` or `git add .` for the home directory.
 
 ## Composing the Commit Message
 
-Format: `type(scope): description [JIRA-ID]`
+Format: `type(scope): description [TICKET-ID]`
 
 **Valid types:** Conventional commits! - `feat`, `fix`, `refactor`, `chore`, `docs`, `style`, `test`, `perf`, `ci`, `build`
 
@@ -34,7 +44,7 @@ Format: `type(scope): description [JIRA-ID]`
   - Changes in `routes/<name>/` → use `<name>` as scope
   - Repo-wide/root-level changes → use one of: `root`, `repo`, `workspace`, `ci`
   - Multiple projects affected → use the primary project, mention others in the body
-- JIRA ID in square brackets at the end
+- ticket ID in square brackets at the end
 - Description is lowercase, imperative mood, no period at the end
 - Body max line length: 200 characters
 

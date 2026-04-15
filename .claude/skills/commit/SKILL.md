@@ -12,6 +12,14 @@ Follow all rules in `$SKILLS_ROOT/commit-changes/SKILL.md`, with these overrides
 - **Push automatically**: if the branch has diverged, push with `--force-with-lease` without asking
 - **Node version manager**: default to `. ~/.nvm/nvm.sh && nvm use &&` if undetected — do not ask the user
 
+## claude-home Repo
+
+When committing to the claude-home repo (detected when the git remote contains `claude-home` or `$REPO_ROOT` is `~/`):
+
+- **Only stage whitelisted paths** — the home directory contains non-repo files that must never be staged
+- Use `git add .claude/ symphony/ README.md` instead of `git add -u`
+- Do **not** stage `symphony/config/`, `symphony/secrets.env`, or any runtime data — these are gitignored
+
 ## Pre-commit checks
 
 ### 1. Detangle check

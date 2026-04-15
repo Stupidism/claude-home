@@ -1,6 +1,6 @@
 ---
 name: setup-worktree
-description: Create an isolated git worktree for a WOR ticket, symlink node_modules, and install dependencies. Run once when a ticket moves from Todo to In Progress.
+description: Create an isolated git worktree for a ticket, symlink node_modules, and install dependencies. Run once when a ticket moves from Todo to In Progress.
 ---
 
 # Setup Worktree
@@ -10,11 +10,11 @@ description: Create an isolated git worktree for a WOR ticket, symlink node_modu
 ## Step 1 — Create the worktree
 
 ```bash
-TICKET_ID="WOR-XX"
+TICKET_ID="${TICKET_ID:-TEAM-XX}"  # already set by Symphony; set manually if running interactively
 SLUG="short-description"
 BRANCH="feat/${TICKET_ID}-${SLUG}"
 FOLDER=$(echo "$BRANCH" | tr '/' '--')
-WORKTREES_DIR="${WORKTREES_DIR:-../workstream-mono-worktrees}"
+WORKTREES_DIR="${WORKTREES_DIR:-$(dirname "$REPO_ROOT")/$(basename "$REPO_ROOT")-worktrees}"
 
 git worktree add "$WORKTREES_DIR/$FOLDER" -b "$BRANCH"
 cd "$WORKTREES_DIR/$FOLDER"

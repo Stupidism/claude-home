@@ -42,15 +42,15 @@ Group related files into atomic commits. Each commit should be independently und
 ```bash
 # Example: commit test files separately from implementation
 git add src/feature.ts src/feature.spec.ts
-git commit -m "feat(scope): implement X [WOR-XX]"
+git commit -m "feat(scope): implement X [$TICKET_ID]"
 
 git add src/other-change.ts
-git commit -m "fix(scope): fix Y [WOR-XX]"
+git commit -m "fix(scope): fix Y [$TICKET_ID]"
 ```
 
 **Rules:**
 
-- Follow conventional commits format: `type(scope): description [WOR-XX]`
+- Follow conventional commits format: `type(scope): description [$TICKET_ID]`
 - One logical change per commit — don't bundle unrelated changes
 - Tests for a feature go in the same commit as the feature code
 - Config / dependency changes get their own commit

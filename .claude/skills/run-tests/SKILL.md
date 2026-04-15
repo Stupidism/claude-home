@@ -39,7 +39,7 @@ If you need to check whether a failure is pre-existing, use `git diff master...H
 
 ### Step 2: Gather Context
 
-1. Read `$SKILLS_ROOT/prime-project/session-state.md` for the current project name, JIRA ID, and phase
+1. Read `$SKILLS_ROOT/prime-project/session-state.md` for the current project name, ticket ID, and phase
 2. Read `$SKILLS_ROOT/prime-project/project-configs/{project-name}.json` for test commands
 3. If no session state exists:
    - Infer project from the current directory (e.g., if `pwd` contains `apps/payroll-backend`, it's `payroll-backend`)
