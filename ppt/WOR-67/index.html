@@ -1,0 +1,952 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Symphony — Autonomous Software Engineering</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/black.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/monokai.css" />
+  <style>
+    :root {
+      --primary: #7c6af7;
+      --accent:  #24e08a;
+      --warn:    #f7b731;
+      --dim:     rgba(255,255,255,0.55);
+    }
+    .reveal { font-family: "Segoe UI", system-ui, sans-serif; }
+    .reveal h1, .reveal h2, .reveal h3 { color: #fff; text-transform: none; font-weight: 700; }
+    .reveal h1 { font-size: 1.9em; }
+    .reveal h2 { font-size: 1.4em; border-bottom: 2px solid var(--primary); padding-bottom: 8px; margin-bottom: 24px; }
+    .reveal h3 { font-size: 1em; color: var(--accent); margin-bottom: 6px; }
+    .reveal p, .reveal li { font-size: 0.75em; line-height: 1.6; }
+    .reveal pre  { font-size: 0.52em; box-shadow: none; }
+    .reveal code { background: rgba(124,106,247,0.18); padding: 2px 6px; border-radius: 4px; color: #c8b8ff; }
+    .tag { display: inline-block; background: var(--primary); color: #fff; font-size: 0.55em; padding: 3px 10px; border-radius: 20px; vertical-align: middle; margin-left: 8px; font-weight: 600; }
+    .tag.green { background: var(--accent); color: #000; }
+    .tag.yellow { background: var(--warn); color: #000; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; text-align: left; }
+    .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+    .card {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 12px;
+      padding: 16px 18px;
+    }
+    .card.accent  { border-color: var(--primary); }
+    .card.green   { border-color: var(--accent); }
+    .card.yellow  { border-color: var(--warn); }
+    .icon { font-size: 1.6em; margin-bottom: 6px; display: block; }
+    .dim  { color: var(--dim); font-size: 0.7em; }
+    .big  { font-size: 1.4em !important; font-weight: 700; color: var(--accent); }
+    .arrow { color: var(--primary); font-size: 1.2em; }
+    .flow { display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap; margin-top: 20px; }
+    .flow-box {
+      background: rgba(124,106,247,0.15);
+      border: 1px solid var(--primary);
+      border-radius: 10px;
+      padding: 10px 16px;
+      font-size: 0.7em;
+      text-align: center;
+      min-width: 100px;
+    }
+    .flow-box.green { background: rgba(36,224,138,0.12); border-color: var(--accent); }
+    .flow-box.yellow { background: rgba(247,183,49,0.12); border-color: var(--warn); }
+    .terminal {
+      background: #0d0d0d;
+      border: 1px solid #333;
+      border-radius: 10px;
+      padding: 14px 16px;
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 0.52em;
+      line-height: 1.5;
+      text-align: left;
+      color: #ccc;
+    }
+    .t-blue   { color: #61afef; }
+    .t-green  { color: #98c379; }
+    .t-yellow { color: #e5c07b; }
+    .t-purple { color: #c678dd; }
+    .t-red    { color: #e06c75; }
+    .t-dim    { color: #5c6370; }
+    .t-white  { color: #abb2bf; }
+    .section-title { color: var(--primary) !important; font-size: 2.2em !important; }
+    ul.clean { list-style: none; padding-left: 0; }
+    ul.clean li::before { content: "→ "; color: var(--primary); font-weight: 700; }
+    ul.check li::before { content: "✓ "; color: var(--accent); font-weight: 700; }
+    .blockquote {
+      border-left: 3px solid var(--primary);
+      padding: 12px 16px;
+      background: rgba(124,106,247,0.08);
+      border-radius: 0 8px 8px 0;
+      font-style: italic;
+      color: #ddd;
+    }
+    .reveal .slides section { padding: 20px 40px; }
+  </style>
+</head>
+<body>
+<div class="reveal">
+  <div class="slides">
+
+    <!-- ═══ TITLE ═══ -->
+    <section>
+      <div style="padding:40px 0">
+        <p style="color:var(--primary);font-size:0.8em;letter-spacing:3px;text-transform:uppercase;margin-bottom:16px">Sun Feng · 2026</p>
+        <h1>Symphony</h1>
+        <h1 style="color:var(--accent)">Autonomous Software Engineering</h1>
+        <p style="color:var(--dim);margin-top:30px">
+          From OpenAI's Specification<br/>to My Own Practice with Claude Code
+        </p>
+        <div style="margin-top:40px;display:flex;gap:12px;justify-content:center">
+          <span class="tag">Part I: Symphony by OpenAI</span>
+          <span class="tag green">Part II: My Practice</span>
+        </div>
+        <p class="dim" style="margin-top:20px">github.com/openai/symphony</p>
+      </div>
+    </section>
+
+    <!-- ═══ AGENDA ═══ -->
+    <section>
+      <h2>Agenda</h2>
+      <div class="grid2">
+        <div class="card accent">
+          <span class="icon">🎼</span>
+          <h3>Part I — Symphony (OpenAI)</h3>
+          <ul class="clean">
+            <li>What is Symphony?</li>
+            <li>The core idea: manage work, not agents</li>
+            <li>How it works end-to-end</li>
+            <li>7-component architecture</li>
+            <li>WORKFLOW.md specification</li>
+            <li>Harness Engineering</li>
+          </ul>
+        </div>
+        <div class="card green">
+          <span class="icon">⚡</span>
+          <h3>Part II — My Practice</h3>
+          <ul class="clean">
+            <li>My own Symphony implementation</li>
+            <li>poll-linear.mts deep dive</li>
+            <li>Claude Code as the agent</li>
+            <li>Live dashboard output</li>
+            <li>Results &amp; learnings</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ PART I DIVIDER ═══ -->
+    <section>
+      <h2 class="section-title">Part I</h2>
+      <h1 style="margin-top:10px">Symphony</h1>
+      <p style="margin-top:20px;font-size:1em">by OpenAI</p>
+      <p class="dim" style="margin-top:16px">github.com/openai/symphony · Apache 2.0</p>
+      <p style="margin-top:20px;font-size:0.85em;color:var(--accent)">Engineering Preview</p>
+    </section>
+
+    <!-- ═══ WHAT IS SYMPHONY ═══ -->
+    <section>
+      <h2>What is Symphony?</h2>
+      <div style="margin-bottom:20px">
+        <div class="blockquote">
+          "Symphony turns project work into isolated, autonomous implementation runs, allowing teams to <strong>manage work instead of supervising coding agents</strong>."
+        </div>
+      </div>
+      <div class="grid2">
+        <div class="card accent">
+          <h3>The Problem It Solves</h3>
+          <p>Traditional AI-assisted coding requires constant human supervision — you manage the agent, not the work. As complexity scales, this becomes a bottleneck.</p>
+          <br/>
+          <p>Symphony inverts this: <strong>you manage work items</strong> (tickets, stories) while agents figure out the implementation autonomously.</p>
+        </div>
+        <div class="card green">
+          <h3>What It Is</h3>
+          <ul>
+            <li>A <strong>daemon service</strong> (runs continuously)</li>
+            <li>Monitors a <strong>project board</strong> (e.g. Linear)</li>
+            <li>Spawns <strong>coding agents</strong> per ticket</li>
+            <li>Each agent works in an <strong>isolated workspace</strong></li>
+            <li>Provides <strong>proof of work</strong> (CI, PR, video)</li>
+            <li>Safely <strong>lands PRs</strong> once accepted</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ THE SHIFT ═══ -->
+    <section>
+      <h2>The Paradigm Shift</h2>
+      <div class="grid2">
+        <div class="card" style="border-color:#e06c75;background:rgba(224,108,117,0.07)">
+          <h3 style="color:#e06c75">Before Symphony</h3>
+          <p style="color:#e06c75;font-size:0.9em;margin-bottom:12px">Managing Agents</p>
+          <ul>
+            <li>You watch the agent work</li>
+            <li>You debug when it gets stuck</li>
+            <li>You approve each action</li>
+            <li>One agent, one human</li>
+            <li>Hard to scale beyond a few concurrent tasks</li>
+          </ul>
+        </div>
+        <div class="card green">
+          <h3>After Symphony</h3>
+          <p style="color:var(--accent);font-size:0.9em;margin-bottom:12px">Managing Work</p>
+          <ul class="check">
+            <li>You write tickets with clear AC</li>
+            <li>Symphony dispatches agents</li>
+            <li>You review PRs (not agent sessions)</li>
+            <li>Many agents, one human</li>
+            <li>Scales with your ticket queue</li>
+          </ul>
+        </div>
+      </div>
+      <div class="card accent" style="margin-top:20px;text-align:center">
+        <p>The shift is from <strong>"supervise AI"</strong> → <strong>"manage work"</strong>. Your attention moves up the stack: from implementation details to product decisions.</p>
+      </div>
+    </section>
+
+    <!-- ═══ HOW IT WORKS ═══ -->
+    <section>
+      <h2>How Symphony Works — End to End</h2>
+      <div class="flow" style="flex-direction:column;gap:10px">
+        <div style="display:flex;gap:14px;align-items:center">
+          <div class="flow-box yellow" style="min-width:130px">
+            📋 Linear Board<br/><span class="dim">tickets in "Todo"</span>
+          </div>
+          <span class="arrow">→</span>
+          <div class="flow-box" style="min-width:160px">
+            🔄 Symphony Daemon<br/><span class="dim">polls every 30s</span>
+          </div>
+          <span class="arrow">→</span>
+          <div class="flow-box" style="min-width:140px">
+            🏗 Workspace<br/><span class="dim">per-ticket isolation</span>
+          </div>
+          <span class="arrow">→</span>
+          <div class="flow-box green" style="min-width:150px">
+            🤖 Coding Agent<br/><span class="dim">Codex / Claude Code</span>
+          </div>
+        </div>
+        <div style="display:flex;gap:14px;align-items:center;margin-top:8px">
+          <div class="flow-box green" style="min-width:150px">
+            📋 Proof of Work<br/><span class="dim">CI + PR + video</span>
+          </div>
+          <span class="arrow">→</span>
+          <div class="flow-box yellow" style="min-width:160px">
+            👤 Human Review<br/><span class="dim">approve / rework</span>
+          </div>
+          <span class="arrow">→</span>
+          <div class="flow-box" style="min-width:140px">
+            🔀 Safe Land<br/><span class="dim">auto merge</span>
+          </div>
+          <span class="arrow">→</span>
+          <div class="flow-box" style="border-color:var(--accent);background:rgba(36,224,138,0.1);min-width:100px">
+            ✅ Done
+          </div>
+        </div>
+      </div>
+      <p class="dim" style="margin-top:16px;text-align:center">Multiple agents run concurrently in isolated workspaces — no cross-ticket contamination.</p>
+    </section>
+
+    <!-- ═══ 7 COMPONENTS ═══ -->
+    <section>
+      <h2>7-Component Architecture</h2>
+      <div class="grid3" style="margin-top:10px">
+        <div class="card">
+          <span class="icon">📄</span>
+          <h3>Workflow Loader</h3>
+          <p>Reads &amp; hot-reloads <code>WORKFLOW.md</code>. YAML front matter + Markdown prompt body. Dynamic config without restarts.</p>
+        </div>
+        <div class="card">
+          <span class="icon">⚙️</span>
+          <h3>Config Layer</h3>
+          <p>Typed getters with defaults. Supports <code>$VAR</code> indirection for secrets (e.g. <code>$LINEAR_API_KEY</code>).</p>
+        </div>
+        <div class="card accent">
+          <span class="icon">📊</span>
+          <h3>Issue Tracker Client</h3>
+          <p>Fetches active/terminal issues from Linear (GraphQL). Normalizes to a stable domain model.</p>
+        </div>
+        <div class="card accent">
+          <span class="icon">🧠</span>
+          <h3>Orchestrator</h3>
+          <p>Single authority over in-memory state. Dispatch eligibility, retry with exponential backoff, reconciliation.</p>
+        </div>
+        <div class="card">
+          <span class="icon">📁</span>
+          <h3>Workspace Manager</h3>
+          <p>Per-issue isolated directories. Lifecycle hooks: <code>after_create</code>, <code>before_run</code>, <code>after_run</code>, <code>before_remove</code>.</p>
+        </div>
+        <div class="card green">
+          <span class="icon">🤖</span>
+          <h3>Agent Runner</h3>
+          <p>Launches coding agent subprocess. Line-delimited JSON-RPC protocol. Streams updates back to orchestrator.</p>
+        </div>
+        <div class="card" style="grid-column: 2">
+          <span class="icon">🔍</span>
+          <h3>Status Surface &amp; Logging</h3>
+          <p>Optional HTTP server (<code>GET /api/v1/state</code>). Structured logging with <code>issue_id</code>, <code>session_id</code> context.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ ORCHESTRATOR DEEP DIVE ═══ -->
+    <section>
+      <h2>The Orchestrator — Decision Engine</h2>
+      <div class="grid2">
+        <div>
+          <div class="card accent" style="margin-bottom:12px">
+            <h3>Poll-and-Dispatch Loop (every 30s)</h3>
+            <ol>
+              <li>Reconcile running agents vs. tracker state</li>
+              <li>Fetch candidate issues (active states)</li>
+              <li>Sort by priority → date → identifier</li>
+              <li>Dispatch eligible issues to agents</li>
+              <li>Report to observability consumers</li>
+            </ol>
+          </div>
+          <div class="card yellow">
+            <h3>Issue Eligibility Rules</h3>
+            <ul>
+              <li>State in <code>active_states</code></li>
+              <li>Not already running or claimed</li>
+              <li>Concurrency slots available</li>
+              <li>If <code>Todo</code>: no un-resolved blockers</li>
+            </ul>
+          </div>
+        </div>
+        <div>
+          <div class="card">
+            <h3>Retry Strategy</h3>
+            <ul>
+              <li><strong>Clean exit:</strong> 1-second continuation retry</li>
+              <li><strong>Error exit:</strong> Exponential backoff <code>min(10s × 2ⁿ, 5min)</code></li>
+              <li><strong>Stall:</strong> Agent inactive → kill + retry</li>
+            </ul>
+          </div>
+          <br/>
+          <div class="card green">
+            <h3>Issue States in Orchestrator</h3>
+            <ul class="clean">
+              <li>Unclaimed → Claimed → Running</li>
+              <li>Running → RetryQueued (on failure)</li>
+              <li>Running → Released (terminal state)</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ WORKFLOW.MD ═══ -->
+    <section>
+      <h2>WORKFLOW.md — The Policy File</h2>
+      <div class="grid2">
+        <div>
+          <p><code>WORKFLOW.md</code> is the heart of Symphony. It's <strong>version-controlled alongside your code</strong> — the workflow evolves with the codebase.</p>
+          <br/>
+          <div class="card">
+            <h3>File Structure</h3>
+            <pre style="font-size:0.85em;margin:0"><code>---
+# YAML front matter: config
+tracker:
+  kind: linear
+  api_key: $LINEAR_API_KEY
+  project_slug: my-team
+  active_states: [Todo, In Progress]
+
+polling:
+  interval_ms: 30000
+
+agent:
+  max_concurrent_agents: 3
+
+codex:
+  command: codex app-server
+  turn_timeout_ms: 3600000
+---
+
+# Markdown body: the agent's prompt
+You are working on ticket {{ issue.title }}.
+
+## Instructions
+...read the ticket, write code, create PR...</code></pre>
+          </div>
+        </div>
+        <div>
+          <div class="card accent" style="margin-bottom:12px">
+            <h3>Why WORKFLOW.md?</h3>
+            <ul>
+              <li>One file controls the agent's entire behavior</li>
+              <li><strong>Hot-reload:</strong> change behavior without restarting Symphony</li>
+              <li>Team-reviewable: the "system prompt" is a PR</li>
+              <li>Per-repo: monorepo can have per-app workflows</li>
+            </ul>
+          </div>
+          <div class="card green">
+            <h3>Template Variables</h3>
+            <ul>
+              <li><code>{"{{ issue.title }}"}</code> — ticket title</li>
+              <li><code>{"{{ issue.description }}"}</code> — full description</li>
+              <li><code>{"{{ attempt }}"}</code> — retry count</li>
+              <li>Strict rendering — unknown vars = hard fail</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ WORKSPACE ISOLATION ═══ -->
+    <section>
+      <h2>Workspace Isolation — Safety by Design</h2>
+      <div class="grid2">
+        <div>
+          <p>Every ticket gets its own <strong>isolated workspace directory</strong>. This is not optional — it's a core safety invariant.</p>
+          <br/>
+          <div class="card accent">
+            <h3>3 Invariants (Must Enforce)</h3>
+            <ol>
+              <li><strong>Agent runs only in its workspace path</strong> — <code>cwd == workspace_path</code> validated before launch</li>
+              <li><strong>Workspace stays inside root</strong> — absolute paths checked, escape attempts rejected</li>
+              <li><strong>Workspace key is sanitized</strong> — <code>[^A-Za-z0-9._-]</code> replaced with <code>_</code></li>
+            </ol>
+          </div>
+        </div>
+        <div>
+          <div class="card">
+            <h3>Lifecycle Hooks</h3>
+            <ul>
+              <li><code>after_create</code> — setup, install deps (fatal on failure)</li>
+              <li><code>before_run</code> — pre-agent checks</li>
+              <li><code>after_run</code> — cleanup (non-fatal)</li>
+              <li><code>before_remove</code> — pre-deletion (non-fatal)</li>
+            </ul>
+          </div>
+          <br/>
+          <div class="card green">
+            <h3>Benefits</h3>
+            <ul class="check">
+              <li>No cross-ticket contamination</li>
+              <li>Failed agents don't corrupt other work</li>
+              <li>Workspace reuse for fast retries</li>
+              <li>Clean shutdown: terminal issues → workspace deleted</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ HARNESS ENGINEERING ═══ -->
+    <section>
+      <h2>Prerequisite: Harness Engineering</h2>
+      <div style="margin-bottom:16px">
+        <div class="blockquote">
+          Symphony works optimally in codebases that have adopted <strong>harness engineering</strong> — an approach to managing AI coding agents.
+        </div>
+      </div>
+      <div class="grid3">
+        <div class="card accent">
+          <span class="icon">🔍</span>
+          <h3>Legibility</h3>
+          <p>Code and architecture an AI agent can navigate without human guidance. Clear naming, obvious file structure, minimal magic.</p>
+        </div>
+        <div class="card">
+          <span class="icon">🏗️</span>
+          <h3>Architectural Enforcement</h3>
+          <p>Linting, type checks, and tests that run in CI — so agents know immediately if they broke something.</p>
+        </div>
+        <div class="card green">
+          <span class="icon">🧹</span>
+          <h3>Entropy Management</h3>
+          <p>Small, well-scoped tickets. Clear Acceptance Criteria. Avoid AI-generated sprawl that future agents can't navigate.</p>
+        </div>
+      </div>
+      <div class="card yellow" style="margin-top:16px;text-align:center">
+        <p>A codebase that <em>humans</em> can navigate quickly is also a codebase <em>agents</em> can navigate autonomously. They share the same prerequisites.</p>
+      </div>
+    </section>
+
+    <!-- ═══ PROOF OF WORK ═══ -->
+    <section>
+      <h2>Proof of Work — How Agents Demonstrate Completion</h2>
+      <div class="grid2">
+        <div>
+          <p>Symphony agents don't just say "I'm done." They provide <strong>verifiable evidence</strong> through multiple channels.</p>
+          <br/>
+          <div class="card accent">
+            <h3>Evidence Channels</h3>
+            <ul>
+              <li>🟢 <strong>CI Status</strong> — all checks green</li>
+              <li>📋 <strong>PR Review Feedback</strong> — agent addresses review comments</li>
+              <li>📊 <strong>Code Complexity Analysis</strong> — no scope creep</li>
+              <li>🎥 <strong>Walkthrough Video</strong> — screen recording of the feature working</li>
+            </ul>
+          </div>
+        </div>
+        <div>
+          <div class="card green">
+            <h3>Why This Matters</h3>
+            <p>You don't need to watch the agent work. You review the <em>output</em> — just like reviewing a PR from a junior engineer.</p>
+          </div>
+          <br/>
+          <div class="card yellow">
+            <h3>Safe Landing</h3>
+            <p>Once a PR is approved, Symphony merges it autonomously. The human decision is "approve / request changes" — not when/how to merge.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ IMPLEMENTATION ═══ -->
+    <section>
+      <h2>Implementation Options</h2>
+      <div class="grid2">
+        <div class="card accent">
+          <span class="icon">📋</span>
+          <h3>Option A: Build Your Own</h3>
+          <p>The OpenAI Symphony <strong>SPEC.md</strong> is a complete, language-agnostic specification. Ask any coding agent to build it for your stack.</p>
+          <br/>
+          <p>The spec covers:</p>
+          <ul>
+            <li>All 7 components in detail</li>
+            <li>Exact API protocols (JSON-RPC)</li>
+            <li>Safety invariants (workspace isolation)</li>
+            <li>Retry/backoff strategy</li>
+            <li>Definition of Done checklist</li>
+          </ul>
+        </div>
+        <div class="card">
+          <span class="icon">⚗️</span>
+          <h3>Option B: Reference Implementation</h3>
+          <p>An <strong>Elixir-based</strong> reference implementation (95.4% of the codebase) is provided as a starting point.</p>
+          <br/>
+          <div class="card green" style="margin-top:10px">
+            <h3>Key Design Choices (from spec)</h3>
+            <ul>
+              <li>No persistent DB — recovery is tracker-driven</li>
+              <li>Per-issue workspace reuse (faster retries)</li>
+              <li>Strict prompt rendering (no silent fallbacks)</li>
+              <li>Stall detection by event inactivity</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ PART I SUMMARY ═══ -->
+    <section>
+      <h2>Part I — Summary</h2>
+      <div class="grid3">
+        <div class="card accent" style="text-align:center">
+          <span class="icon">🔄</span>
+          <h3>Daemon</h3>
+          <p>Always running, always polling. No manual triggers needed.</p>
+        </div>
+        <div class="card green" style="text-align:center">
+          <span class="icon">🏗</span>
+          <h3>Isolated</h3>
+          <p>Per-ticket workspaces. Agents can't interfere with each other.</p>
+        </div>
+        <div class="card yellow" style="text-align:center">
+          <span class="icon">📦</span>
+          <h3>Spec-Driven</h3>
+          <p>WORKFLOW.md is your policy. Version-control it like code.</p>
+        </div>
+      </div>
+      <br/>
+      <div class="blockquote">
+        The key insight: <strong>Symphony is not a product you use — it's a specification you implement.</strong> Each team builds their own Symphony, tuned to their stack, tools, and workflow.
+      </div>
+    </section>
+
+    <!-- ═══ PART II DIVIDER ═══ -->
+    <section>
+      <h2 class="section-title">Part II</h2>
+      <h1 style="margin-top:10px">My Practice</h1>
+      <p class="dim" style="margin-top:20px">Building my own Symphony on top of Claude Code + Linear</p>
+      <div style="margin-top:24px;display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+        <span class="tag green">claude-home</span>
+        <span class="tag">poll-linear.mts</span>
+        <span class="tag">run-ticket.sh</span>
+        <span class="tag yellow">Claude Code</span>
+      </div>
+    </section>
+
+    <!-- ═══ MY SYSTEM ═══ -->
+    <section>
+      <h2>My Implementation</h2>
+      <div class="grid2">
+        <div>
+          <p>I built my own Symphony following the spec, using <strong>Claude Code</strong> as the agent instead of Codex.</p>
+          <br/>
+          <div class="card">
+            <h3>Tech Stack</h3>
+            <ul>
+              <li><strong>Daemon:</strong> <code>poll-linear.mts</code> (TypeScript, runs on my Mac 24/7)</li>
+              <li><strong>Runner:</strong> <code>run-ticket.sh</code> (bash, per-ticket)</li>
+              <li><strong>Agent:</strong> <code>claude --dangerously-skip-permissions</code></li>
+              <li><strong>Tracker:</strong> Linear (GraphQL API)</li>
+              <li><strong>Repos:</strong> Multiple (workstream-mono, claude-home, …)</li>
+            </ul>
+          </div>
+        </div>
+        <div>
+          <div class="card accent">
+            <h3>Mapping to Symphony Spec</h3>
+            <table style="font-size:0.85em;width:100%;border-collapse:collapse">
+              <tr style="color:var(--accent);border-bottom:1px solid rgba(124,106,247,0.3)">
+                <th style="padding:6px 4px;text-align:left">Spec Component</th>
+                <th style="padding:6px 4px;text-align:left">My Implementation</th>
+              </tr>
+              <tr style="border-bottom:1px solid rgba(255,255,255,0.07)">
+                <td style="padding:6px 4px">Orchestrator</td>
+                <td style="padding:6px 4px">poll-linear.mts</td>
+              </tr>
+              <tr style="border-bottom:1px solid rgba(255,255,255,0.07)">
+                <td style="padding:6px 4px">Workspace Manager</td>
+                <td style="padding:6px 4px">git worktrees</td>
+              </tr>
+              <tr style="border-bottom:1px solid rgba(255,255,255,0.07)">
+                <td style="padding:6px 4px">Agent Runner</td>
+                <td style="padding:6px 4px">run-ticket.sh</td>
+              </tr>
+              <tr style="border-bottom:1px solid rgba(255,255,255,0.07)">
+                <td style="padding:6px 4px">Coding Agent</td>
+                <td style="padding:6px 4px">Claude Code</td>
+              </tr>
+              <tr>
+                <td style="padding:6px 4px">WORKFLOW.md</td>
+                <td style="padding:6px 4px">~/.claude/WORKFLOW.md</td>
+              </tr>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ POLL LINEAR ═══ -->
+    <section>
+      <h2>poll-linear.mts — The Orchestrator</h2>
+      <div class="grid2">
+        <div>
+          <p>My orchestrator implementation — runs permanently as a local daemon.</p>
+          <br/>
+          <div class="card" style="margin-bottom:10px">
+            <h3>Core loop</h3>
+            <ol>
+              <li>Fetch all configured boards from Linear</li>
+              <li>Find eligible tickets (assigned to me, in Todo/In Progress)</li>
+              <li>Spawn Claude Code agents (up to max concurrent)</li>
+              <li>Monitor agents, handle exits / reworks</li>
+              <li>Render live dashboard</li>
+              <li>Sleep 30s, repeat</li>
+            </ol>
+          </div>
+          <div class="card green">
+            <h3>Extra features (beyond spec)</h3>
+            <ul>
+              <li>Rate-limit detection → sleep-in-place until window expires</li>
+              <li>Multi-board: one daemon, many Linear teams</li>
+              <li>Interactive CLI (<code>resume &lt;id&gt;</code>, <code>help</code>)</li>
+            </ul>
+          </div>
+        </div>
+        <div>
+          <pre><code class="language-typescript">// Core dispatch loop
+while (true) {
+  // Rate-limit: sleep in-place (not re-poll)
+  if (rateLimitPausedUntil) {
+    const ms = rateLimitPausedUntil - Date.now();
+    await sleep(ms);
+    rateLimitPausedUntil = null;
+  }
+
+  await poll();  // fetch + reconcile + dispatch
+
+  await sleep(POLL_INTERVAL_MS);
+}
+
+async function poll() {
+  for (const board of boards) {
+    const todos = await fetchByState(board, 'Todo');
+    for (const ticket of todos) {
+      if (!isEligible(ticket, board)) continue;
+      if (runningAgents.has(ticket.identifier)) continue;
+      if (runningAgents.size >= MAX_CONCURRENT) break;
+
+      await moveToInProgress(board, ticket);
+      spawnAgent(ticket, board, 'fresh');
+    }
+  }
+}</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ RUN TICKET ═══ -->
+    <section>
+      <h2>run-ticket.sh — Workspace + Agent Runner</h2>
+      <div class="grid2">
+        <div>
+          <p>Per-ticket script — called by the orchestrator for each new ticket.</p>
+          <br/>
+          <div class="card accent">
+            <h3>1. Workspace = Git Worktree</h3>
+            <p>Instead of a plain directory, each ticket gets a <strong>git worktree</strong>:</p>
+            <ul>
+              <li>Isolated branch: <code>feat/WOR-67-...</code></li>
+              <li>Symlinked <code>node_modules</code> (instant setup)</li>
+              <li>Full git history available to agent</li>
+              <li>Multiple worktrees share one repo → disk efficient</li>
+            </ul>
+          </div>
+          <br/>
+          <div class="card green">
+            <h3>2. Agent = Claude Code</h3>
+            <p><code>claude --dangerously-skip-permissions</code> with WORKFLOW.md injected as the startup prompt. The agent reads the ticket, explores code, implements, validates, and creates a PR.</p>
+          </div>
+        </div>
+        <div>
+          <pre><code class="language-bash">#!/usr/bin/env bash
+# Simplified run-ticket.sh
+
+BRANCH="feat/${TICKET_ID}-${SLUG}"
+WORKTREE="$WORKTREES_DIR/$BRANCH"
+
+# 1. Create isolated workspace (git worktree)
+git worktree add "$WORKTREE" \
+  -b "$BRANCH" origin/master
+
+# 2. Symlink node_modules (instant)
+ln -s "$REPO_ROOT/node_modules" \
+  "$WORKTREE/node_modules"
+
+# 3. Build prompt from WORKFLOW.md template
+PROMPT=$(envsubst < ~/.claude/WORKFLOW.md)
+
+cd "$WORKTREE"
+
+# 4. Launch Claude Code agent
+claude \
+  --dangerously-skip-permissions \
+  --print "$PROMPT" \
+  >> "logs/symphony-$TICKET_ID.log" 2>&1</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ LIVE OUTPUT ═══ -->
+    <section>
+      <h2>Live: Typical poll-linear Output</h2>
+      <div class="terminal">
+<span class="t-blue">╔══════════════════════════════════════════╗</span><br/>
+<span class="t-blue">║</span><span class="t-white">   Symphony Poller — claude-home           </span><span class="t-blue">║</span><br/>
+<span class="t-blue">╚══════════════════════════════════════════╝</span><br/>
+<span class="t-dim">  Board:       WOR (Linear) · Projects: 8 · Max agents: 3 · Poll: every 30s</span><br/>
+<span class="t-dim">  resume &lt;id&gt; to force-open a session  •  help for commands  •  Ctrl+C to stop</span><br/>
+<br/>
+<span class="t-yellow">[09:14:02] Claiming </span><span class="t-white">WOR-63</span><span class="t-dim"> [hiring] — Add supplemental pay to hiring event creation</span><br/>
+<span class="t-dim">[09:14:05] → spawnAgent fresh | worktree feat/WOR-63-add-supplemental-pay...</span><br/>
+<span class="t-yellow">[09:31:18] Claiming </span><span class="t-white">WOR-65</span><span class="t-dim"> [ODI] — Fix mobile bottom space</span><br/>
+<br/>
+<span class="t-dim">┌──────────────────── Running Agents ─────────────────────────────────┐</span><br/>
+<span class="t-dim">│</span> <span class="t-green"> WOR-63</span> <span class="t-dim">│</span> <span class="t-white">hiring    </span> <span class="t-dim">│</span> <span class="t-yellow">00:18:42</span> <span class="t-dim">│ creating PR, waiting for CI...           │</span><br/>
+<span class="t-dim">│</span> <span class="t-yellow"> WOR-65</span> <span class="t-dim">│</span> <span class="t-white">ODI       </span> <span class="t-dim">│</span> <span class="t-green">00:02:11</span> <span class="t-dim">│ reading ticket, exploring codebase...    │</span><br/>
+<span class="t-dim">│</span> <span class="t-purple"> WOR-67</span> <span class="t-dim">│</span> <span class="t-white">Symphony  </span> <span class="t-dim">│</span> <span class="t-green">00:00:04</span> <span class="t-dim">│ reading ticket...                        │</span><br/>
+<span class="t-dim">└──────────────────────────────────────────────────────────────────────┘</span><br/>
+<br/>
+<span class="t-dim">  Eligible:  0 queued  │  Blocked: 1 (missing AC)</span><br/>
+<br/>
+<span class="t-green">[09:32:55] ✓ WOR-65 done (exit 0) → moveToHumanReview OK</span>
+      </div>
+    </section>
+
+    <!-- ═══ WORKFLOW.MD MY VERSION ═══ -->
+    <section>
+      <h2>My WORKFLOW.md — The Agent's Playbook</h2>
+      <div class="grid2">
+        <div>
+          <p>Lives at <code>~/.claude/WORKFLOW.md</code> in claude-home. Version-controlled, reviewable as a PR.</p>
+          <br/>
+          <div class="card">
+            <h3>7 Steps (from the workflow)</h3>
+            <ol>
+              <li><strong>Read &amp; Plan</strong> — fetch ticket, create workpad</li>
+              <li><strong>Setup Worktree</strong> — already done by runner</li>
+              <li><strong>Implement</strong> — read code first, write in phases</li>
+              <li><strong>Validate</strong> — lint, tests, type-check</li>
+              <li><strong>Rebase + PR</strong> — rebase onto master, create PR</li>
+              <li><strong>Submit for Review</strong> — evidence to workpad</li>
+              <li><strong>Merge</strong> — land skill, exit</li>
+            </ol>
+          </div>
+        </div>
+        <div>
+          <div class="card accent" style="margin-bottom:12px">
+            <h3>Skills System</h3>
+            <p>Each step references a Markdown skill file in <code>~/.claude/skills/</code>. The agent reads the skill at runtime.</p>
+            <br/>
+            <p>Skills = reusable, version-controlled "sub-instructions". A better <code>create-pr</code> skill improves every future ticket.</p>
+          </div>
+          <div class="card green">
+            <h3>Linear Workpad</h3>
+            <p>A persistent comment on the ticket. The agent's scratchpad: plan, AC checkboxes, progress notes. Survives daemon restarts.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ RESULTS ═══ -->
+    <section>
+      <h2>Results</h2>
+      <div class="grid3">
+        <div class="card accent" style="text-align:center">
+          <span class="icon">📦</span>
+          <p class="big">60+</p>
+          <p>WOR tickets handled autonomously</p>
+        </div>
+        <div class="card green" style="text-align:center">
+          <span class="icon">⏱️</span>
+          <p class="big">~80%</p>
+          <p>pass review on first submission</p>
+        </div>
+        <div class="card yellow" style="text-align:center">
+          <span class="icon">🌙</span>
+          <p class="big">24/7</p>
+          <p>daemon runs while I sleep</p>
+        </div>
+      </div>
+      <br/>
+      <div class="grid2">
+        <div class="card">
+          <h3>What works well</h3>
+          <ul class="check">
+            <li>Small, well-defined tickets with clear AC</li>
+            <li>Frontend features following existing patterns</li>
+            <li>Bug fixes with clear reproduction path</li>
+            <li>Chores: config changes, dependency updates</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>What still needs humans</h3>
+          <ul>
+            <li>Ambiguous or under-specified tickets</li>
+            <li>Novel architecture decisions</li>
+            <li>Cross-repo coordination</li>
+            <li>Debugging flaky E2E tests</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ LEARNINGS ═══ -->
+    <section>
+      <h2>Key Learnings</h2>
+      <div class="grid2">
+        <div>
+          <div class="card accent" style="margin-bottom:12px">
+            <h3>1. Ticket quality is the real bottleneck</h3>
+            <p>A ticket with clear Acceptance Criteria gets solved autonomously. A vague ticket gets reworked 3× and wastes agent time. <strong>Symphony amplifies your process — good or bad.</strong></p>
+          </div>
+          <div class="card" style="margin-bottom:12px">
+            <h3>2. WORKFLOW.md is your product</h3>
+            <p>Every improvement to <code>~/.claude/skills/</code> instantly improves all future tickets. Treat it like production code — review it, test it, iterate.</p>
+          </div>
+          <div class="card green">
+            <h3>3. Git worktrees = perfect isolation</h3>
+            <p>Zero overhead isolation. Multiple agents, one repo, no conflicts. The spec's workspace requirement maps perfectly to git worktrees.</p>
+          </div>
+        </div>
+        <div>
+          <div class="card yellow" style="margin-bottom:12px">
+            <h3>4. Human review is a feature</h3>
+            <p>The PR review step catches the 20% of cases where the agent went in the wrong direction. Don't skip it — it's what makes the system <em>trustworthy</em>.</p>
+          </div>
+          <div class="card" style="margin-bottom:12px">
+            <h3>5. Sleep-in-place for rate limits</h3>
+            <p>Sleep <em>inside the current poll tick</em> until the window expires — don't return early. This keeps agent session context alive and allows immediate resumption.</p>
+          </div>
+          <div class="card accent">
+            <h3>6. The spec is the starting point</h3>
+            <p>I deviated from the spec (Claude Code vs Codex, TypeScript vs Elixir, git worktrees vs plain dirs). The spec gives you the design — you own the implementation.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ CONCLUSION ═══ -->
+    <section>
+      <h2>Conclusion</h2>
+      <div class="grid2">
+        <div>
+          <div class="card accent">
+            <h3>Symphony taught me…</h3>
+            <ul>
+              <li>Manage <em>work</em>, not agents</li>
+              <li>Isolation is non-negotiable</li>
+              <li>The policy file (WORKFLOW.md) is as important as the code</li>
+              <li>Proof of work makes AI trustworthy for humans</li>
+            </ul>
+          </div>
+        </div>
+        <div>
+          <div class="card green">
+            <h3>My practice showed me…</h3>
+            <ul>
+              <li>Claude Code is a capable Symphony agent</li>
+              <li>Ticket quality matters more than agent capability</li>
+              <li>Skills = reusable prompt engineering</li>
+              <li>~80% autonomous is already a massive win</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <div class="card" style="margin-top:20px;text-align:center">
+        <p style="font-size:0.9em">
+          The future of engineering is not replacing developers — it's <strong style="color:var(--accent)">elevating them from implementation to management</strong>. Symphony is the blueprint.
+        </p>
+      </div>
+    </section>
+
+    <!-- ═══ THANK YOU ═══ -->
+    <section>
+      <div style="padding:40px 0;text-align:center">
+        <h1>Thank You</h1>
+        <p style="color:var(--dim);margin-top:16px">Questions?</p>
+        <div style="margin-top:40px;display:flex;gap:24px;justify-content:center;flex-wrap:wrap;font-size:0.75em">
+          <div class="card" style="min-width:180px">
+            <h3>Symphony (OpenAI)</h3>
+            <p class="dim">github.com/openai/symphony</p>
+          </div>
+          <div class="card accent" style="min-width:180px">
+            <h3>My claude-home</h3>
+            <p class="dim">github.com/Stupidism/claude-home</p>
+          </div>
+          <div class="card green" style="min-width:180px">
+            <h3>Slides</h3>
+            <p class="dim">symphony-learn.vercel.app</p>
+          </div>
+        </div>
+        <p style="margin-top:36px;color:var(--dim);font-size:0.6em">Made with Reveal.js · Sun Feng · 2026</p>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/highlight.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/notes/notes.js"></script>
+<script>
+  Reveal.initialize({
+    hash: true,
+    slideNumber: 'c/t',
+    transition: 'slide',
+    backgroundTransition: 'fade',
+    plugins: [RevealHighlight, RevealNotes],
+    width: 1200,
+    height: 700,
+    margin: 0.04,
+  });
+</script>
+</body>
+</html>
