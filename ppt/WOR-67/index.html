@@ -83,6 +83,12 @@
       color: #ddd;
     }
     .reveal .slides section { padding: 20px 40px; }
+    /* Allow overflowing slides to scroll */
+    .reveal .slides section {
+      overflow-y: auto;
+      max-height: 100%;
+      box-sizing: border-box;
+    }
   </style>
 </head>
 <body>
@@ -1145,6 +1151,7 @@ claude \
     width: 1200,
     height: 700,
     margin: 0.04,
+    scrollActivationWidth: null,
   });
 </script>
 </body>
