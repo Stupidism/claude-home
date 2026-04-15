@@ -426,6 +426,56 @@ async function resetReworkTicket(issue: Issue, board: BoardConfig): Promise<void
   await moveToTodo(board, issue.id, identifier);
 }
 
+/**
+ * Derive the branch name for a ticket using the same slug logic as spawnAgent.
+ */
+function branchForIssue(issue: Issue): string {
+  const slug = issue.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-').slice(0, 40).replace(/-$/, '');
+  return `feat/${issue.identifier}-${slug}`;
+}
+
+/**
+ * Check whether all PRs for a ticket's branch have been merged on GitHub
+ * (i.e. at least one merged PR exists and no open PRs remain).
+ * Returns true only when it is safe to finalize: merged exists AND no open PR.
+ */
+function areAllPRsMerged(issue: Issue, board: BoardConfig): boolean {
+  const repo = resolveRepo(issue, board);
+  const repoPath = repo.path.replace(/^~/, process.env['HOME'] ?? '~');
+  const branch = branchForIssue(issue);
+  const ghOpts = { encoding: 'utf8' as const, cwd: repoPath };
+  // If an open PR still exists, the ticket is not ready to finalize
+  const openResult = child_process.spawnSync(
+    'gh', ['pr', 'list', '--head', branch, '--state', 'open', '--json', 'number', '--limit', '1'], ghOpts
+  );
+  try { if (openResult.status === 0 && (JSON.parse(openResult.stdout) as unknown[]).length > 0) return false; } catch { /* ignore */ }
+  // Check for at least one merged PR
+  const mergedResult = child_process.spawnSync(
+    'gh', ['pr', 'list', '--head', branch, '--state', 'merged', '--json', 'number', '--limit', '1'], ghOpts
+  );
+  if (mergedResult.status !== 0) return false;
+  try { return (JSON.parse(mergedResult.stdout) as unknown[]).length > 0; } catch { return false; }
+}
+
+/**
+ * Remove the local worktree for a ticket (best-effort).
+ */
+function removeWorktree(issue: Issue, board: BoardConfig): void {
+  const repo = resolveRepo(issue, board);
+  const repoPath = repo.path.replace(/^~/, process.env['HOME'] ?? '~');
+  const worktreesDir = repo.worktreesDir.replace(/^~/, process.env['HOME'] ?? '~');
+  const folder = branchForIssue(issue).replace(/\//g, '--');
+  const worktreePath = path.join(worktreesDir, folder);
+  if (!fs.existsSync(worktreePath)) return;
+  const r = child_process.spawnSync('git', ['worktree', 'remove', '--force', worktreePath], { encoding: 'utf8', cwd: repoPath });
+  if (r.status === 0) {
+    child_process.spawnSync('git', ['worktree', 'prune'], { encoding: 'utf8', cwd: repoPath });
+    log(chalk.dim(`[symphony] Removed worktree for ${issue.identifier}`));
+  } else {
+    log(chalk.yellow(`[symphony] Failed to remove worktree for ${issue.identifier}: ${r.stderr?.trim()}`));
+  }
+}
+
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
 interface AgentEntry {
@@ -1226,6 +1276,18 @@ async function poll(): Promise<void> {
     // Merging
     for (const issue of mergingTickets.filter((t) => isEligible(t, board))) {
       if (runningAgents.has(issue.identifier)) continue;
+
+      // If the PR is already merged (e.g. merged manually or Linear wasn't connected),
+      // skip spawning an agent and finalize directly.
+      try {
+        if (areAllPRsMerged(issue, board)) {
+          log(chalk.green(`[${timestamp()}] ✓ PR already merged for ${chalk.bold(issue.identifier)} — finalizing`));
+          removeWorktree(issue, board);
+          await moveToDone(board, issue.id, issue.identifier);
+          continue;
+        }
+      } catch { /* best-effort — fall through to normal agent spawn */ }
+
       if (runningAgents.size >= MAX_CONCURRENT) break;
       log(chalk.magenta(`[${timestamp()}] ⬇ Merging:`) + ` ${chalk.bold(issue.identifier)} — ${issue.title}`);
       spawnAgent(issue, board, 'continue', true);
