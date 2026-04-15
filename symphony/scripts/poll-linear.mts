@@ -441,11 +441,11 @@ function branchForIssue(issue: Issue): string {
 }
 
 /**
- * Check whether the PR for a ticket has already been merged on GitHub,
- * with no remaining open PRs on the same branch.
+ * Check whether all PRs for a ticket's branch have been merged on GitHub
+ * (i.e. at least one merged PR exists and no open PRs remain).
  * Returns true only when it is safe to finalize: merged exists AND no open PR.
  */
-function isPRMerged(issue: Issue, board: BoardConfig): boolean {
+function areAllPRsMerged(issue: Issue, board: BoardConfig): boolean {
   const repo = resolveRepo(issue, board);
   const repoPath = repo.path.replace(/^~/, process.env['HOME'] ?? '~');
   const branch = branchForIssue(issue);
@@ -1286,7 +1286,7 @@ async function poll(): Promise<void> {
       // If the PR is already merged (e.g. merged manually or Linear wasn't connected),
       // skip spawning an agent and finalize directly.
       try {
-        if (isPRMerged(issue, board)) {
+        if (areAllPRsMerged(issue, board)) {
           log(chalk.green(`[${timestamp()}] ✓ PR already merged for ${chalk.bold(issue.identifier)} — finalizing`));
           removeWorktree(issue, board);
           await moveToDone(board, issue.id, issue.identifier);
