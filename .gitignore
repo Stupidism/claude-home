@@ -11,6 +11,10 @@
 !.claude/
 !.claude/**
 
+# presentations / slide decks
+!ppt/
+!ppt/**
+
 # symphony automation — symphony/.gitignore handles runtime exclusions
 !symphony/
 !symphony/**

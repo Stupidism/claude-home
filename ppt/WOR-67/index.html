@@ -1,0 +1,917 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Symphony: Autonomous AI Agent Systems</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/black.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/monokai.css" />
+  <style>
+    :root {
+      --primary: #7c6af7;
+      --accent:  #24e08a;
+      --warn:    #f7b731;
+      --dim:     rgba(255,255,255,0.55);
+    }
+    .reveal { font-family: "Segoe UI", system-ui, sans-serif; }
+    .reveal h1, .reveal h2, .reveal h3 { color: #fff; text-transform: none; font-weight: 700; }
+    .reveal h1 { font-size: 1.9em; }
+    .reveal h2 { font-size: 1.4em; border-bottom: 2px solid var(--primary); padding-bottom: 8px; margin-bottom: 24px; }
+    .reveal h3 { font-size: 1em; color: var(--accent); margin-bottom: 6px; }
+    .reveal p, .reveal li { font-size: 0.75em; line-height: 1.6; }
+    .reveal pre  { font-size: 0.55em; box-shadow: none; }
+    .reveal code { background: rgba(124,106,247,0.18); padding: 2px 6px; border-radius: 4px; color: #c8b8ff; }
+    .tag { display: inline-block; background: var(--primary); color: #fff; font-size: 0.55em; padding: 3px 10px; border-radius: 20px; vertical-align: middle; margin-left: 8px; font-weight: 600; }
+    .tag.green { background: var(--accent); color: #000; }
+    .tag.yellow { background: var(--warn); color: #000; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; text-align: left; }
+    .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+    .card {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 12px;
+      padding: 16px 18px;
+    }
+    .card.accent  { border-color: var(--primary); }
+    .card.green   { border-color: var(--accent); }
+    .card.yellow  { border-color: var(--warn); }
+    .icon { font-size: 1.6em; margin-bottom: 6px; display: block; }
+    .dim  { color: var(--dim); font-size: 0.7em; }
+    .big  { font-size: 1.4em !important; font-weight: 700; color: var(--accent); }
+    .arrow { color: var(--primary); font-size: 1.2em; }
+    .flow { display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap; margin-top: 20px; }
+    .flow-box {
+      background: rgba(124,106,247,0.15);
+      border: 1px solid var(--primary);
+      border-radius: 10px;
+      padding: 10px 16px;
+      font-size: 0.7em;
+      text-align: center;
+      min-width: 100px;
+    }
+    .flow-box.green { background: rgba(36,224,138,0.12); border-color: var(--accent); }
+    .terminal {
+      background: #0d0d0d;
+      border: 1px solid #333;
+      border-radius: 10px;
+      padding: 14px 16px;
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 0.52em;
+      line-height: 1.5;
+      text-align: left;
+      color: #ccc;
+    }
+    .t-blue   { color: #61afef; }
+    .t-green  { color: #98c379; }
+    .t-yellow { color: #e5c07b; }
+    .t-purple { color: #c678dd; }
+    .t-red    { color: #e06c75; }
+    .t-dim    { color: #5c6370; }
+    .t-white  { color: #abb2bf; }
+    .section-title { color: var(--primary) !important; font-size: 2.2em !important; }
+    ul.clean { list-style: none; padding-left: 0; }
+    ul.clean li::before { content: "→ "; color: var(--primary); font-weight: 700; }
+    ul.check li::before { content: "✓ "; color: var(--accent); font-weight: 700; }
+    .reveal .slides section { padding: 20px 40px; }
+  </style>
+</head>
+<body>
+<div class="reveal">
+  <div class="slides">
+
+    <!-- ═══════════════════════════ TITLE ═══════════════════════════ -->
+    <section>
+      <div style="padding:40px 0">
+        <p style="color:var(--primary);font-size:0.8em;letter-spacing:3px;text-transform:uppercase;margin-bottom:16px">Sun Feng · 2026</p>
+        <h1>Symphony</h1>
+        <h1 style="color:var(--accent)">Autonomous AI Agent Systems</h1>
+        <p style="color:var(--dim);margin-top:30px">
+          From OpenAI's Agents SDK Framework<br/>to My Own Autonomous Coding Practice
+        </p>
+        <div style="margin-top:40px;display:flex;gap:12px;justify-content:center">
+          <span class="tag">Part I: OpenAI Agents SDK</span>
+          <span class="tag green">Part II: My Practice</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════ AGENDA ═══════════════════════════ -->
+    <section>
+      <h2>Agenda</h2>
+      <div class="grid2">
+        <div class="card accent">
+          <span class="icon">🤖</span>
+          <h3>Part I — OpenAI Agents SDK</h3>
+          <ul class="clean">
+            <li>What is it?</li>
+            <li>Core primitives</li>
+            <li>Agents &amp; Handoffs</li>
+            <li>Tools &amp; Guardrails</li>
+            <li>Tracing &amp; Sessions</li>
+            <li>Quick code example</li>
+          </ul>
+        </div>
+        <div class="card green">
+          <span class="icon">⚡</span>
+          <h3>Part II — My Practice</h3>
+          <ul class="clean">
+            <li>Motivation</li>
+            <li>System architecture</li>
+            <li>poll-linear.mts deep dive</li>
+            <li>Live output demo</li>
+            <li>Results &amp; learnings</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════ PART I DIVIDER ═══════════════ -->
+    <section>
+      <h2 class="section-title">Part I</h2>
+      <h1 style="margin-top:10px">OpenAI Agents SDK</h1>
+      <p class="dim" style="margin-top:20px">github.com/openai/openai-agents-python</p>
+      <p style="margin-top:16px;font-size:0.8em">
+        A lightweight yet powerful framework<br/>
+        for building <span style="color:var(--accent)">multi-agent workflows</span>
+      </p>
+    </section>
+
+    <!-- ═══════════════ WHAT IS IT ═══════════════ -->
+    <section>
+      <h2>What is OpenAI Agents SDK?</h2>
+      <div class="grid2" style="align-items:start">
+        <div>
+          <p>OpenAI Agents SDK (formerly <em>Swarm</em>, also referred to as <em>Symphony</em>) is an <strong>open-source framework</strong> for orchestrating multiple AI agents that coordinate to solve complex tasks.</p>
+          <br/>
+          <p>It provides a small, composable set of primitives — keeping the framework <em>easy to learn</em> while being powerful enough for production-grade multi-agent pipelines.</p>
+        </div>
+        <div>
+          <div class="card accent" style="margin-bottom:12px">
+            <h3>Design Goals</h3>
+            <ul>
+              <li>Minimal abstractions — few concepts, easy to learn</li>
+              <li>Provider-agnostic — works with OpenAI &amp; 100+ other LLMs</li>
+              <li>Production-ready — tracing, guardrails, human-in-the-loop</li>
+            </ul>
+          </div>
+          <div class="card green">
+            <h3>Open Source</h3>
+            <p>Apache-2.0 license · Python 3.9+ · Active development by OpenAI</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════ 8 CORE CONCEPTS ═══════════════ -->
+    <section>
+      <h2>8 Core Primitives</h2>
+      <div class="grid3" style="margin-top:10px">
+        <div class="card">
+          <span class="icon">🧠</span>
+          <h3>Agents</h3>
+          <p>LLMs configured with instructions, tools, and guardrails</p>
+        </div>
+        <div class="card">
+          <span class="icon">🔀</span>
+          <h3>Handoffs</h3>
+          <p>Delegate specialized sub-tasks to other agents</p>
+        </div>
+        <div class="card">
+          <span class="icon">🔧</span>
+          <h3>Tools</h3>
+          <p>Functions, MCP servers, or hosted services agents can call</p>
+        </div>
+        <div class="card">
+          <span class="icon">🛡️</span>
+          <h3>Guardrails</h3>
+          <p>Input/output validation and safety filters</p>
+        </div>
+        <div class="card">
+          <span class="icon">👤</span>
+          <h3>Human-in-Loop</h3>
+          <p>Built-in checkpoints for human oversight</p>
+        </div>
+        <div class="card">
+          <span class="icon">💬</span>
+          <h3>Sessions</h3>
+          <p>Automatic conversation history management</p>
+        </div>
+        <div class="card">
+          <span class="icon">🔍</span>
+          <h3>Tracing</h3>
+          <p>Integrated monitoring and debugging for agent runs</p>
+        </div>
+        <div class="card">
+          <span class="icon">🎙️</span>
+          <h3>Realtime</h3>
+          <p>Voice-enabled agents with full SDK features</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════ AGENTS ═══════════════ -->
+    <section>
+      <h2>Primitive 1 — Agents</h2>
+      <div class="grid2">
+        <div>
+          <p>An <strong>Agent</strong> is an LLM paired with:</p>
+          <ul>
+            <li><strong>Instructions</strong> — system prompt defining its role and behavior</li>
+            <li><strong>Tools</strong> — functions the agent can invoke (web search, code exec, APIs…)</li>
+            <li><strong>Guardrails</strong> — safety constraints applied before/after generation</li>
+            <li><strong>Handoffs</strong> — pointers to other agents it can delegate to</li>
+          </ul>
+          <br/>
+          <p>Agents are <em>composable</em> — each is a discrete unit that can be combined into complex pipelines while staying independently testable.</p>
+        </div>
+        <div>
+          <pre><code class="language-python">from agents import Agent, Runner
+
+triage = Agent(
+  name="Triage",
+  instructions="""
+    Route the user's request
+    to the right specialist.
+  """,
+  handoffs=[coding_agent, qa_agent]
+)
+
+result = Runner.run_sync(
+  triage,
+  "Fix the login bug in auth.py"
+)
+print(result.final_output)</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════ HANDOFFS ═══════════════ -->
+    <section>
+      <h2>Primitive 2 — Handoffs</h2>
+      <div class="grid2">
+        <div>
+          <p><strong>Handoffs</strong> let one agent delegate to a specialist agent, creating an <em>orchestration hierarchy</em>.</p>
+          <br/>
+          <div class="card">
+            <h3>How it works</h3>
+            <ol>
+              <li>Triage agent receives user request</li>
+              <li>Decides which specialist to call</li>
+              <li>Passes context via handoff</li>
+              <li>Specialist completes the task</li>
+              <li>Result returned up the chain</li>
+            </ol>
+          </div>
+        </div>
+        <div>
+          <div class="flow" style="flex-direction:column;gap:8px">
+            <div class="flow-box">👤 User request</div>
+            <div style="color:var(--primary)">↓</div>
+            <div class="flow-box">🧠 Triage Agent<br/><span class="dim">routes request</span></div>
+            <div style="display:flex;gap:20px;color:var(--primary)">
+              <span>↙</span><span>↘</span>
+            </div>
+            <div style="display:flex;gap:12px">
+              <div class="flow-box green">💻 Coding<br/>Agent</div>
+              <div class="flow-box green">🧪 QA<br/>Agent</div>
+            </div>
+            <div style="color:var(--primary)">↑ results</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════ TOOLS ═══════════════ -->
+    <section>
+      <h2>Primitive 3 — Tools</h2>
+      <div class="grid3">
+        <div class="card accent">
+          <h3>Function Tools</h3>
+          <p>Any Python function decorated with <code>@function_tool</code>. The SDK auto-generates the JSON schema.</p>
+          <pre><code class="language-python">@function_tool
+def search_web(query: str) -> str:
+    """Search the web."""
+    return do_search(query)</code></pre>
+        </div>
+        <div class="card">
+          <h3>MCP Tools</h3>
+          <p>Connect to any <strong>Model Context Protocol</strong> server — file system, databases, APIs — with zero boilerplate.</p>
+          <pre><code class="language-python">async with MCPServerStdio(
+  "npx",
+  ["-y", "@modelcontextprotocol/server-filesystem", "."]
+) as mcp:
+  agent = Agent(mcp_servers=[mcp])</code></pre>
+        </div>
+        <div class="card green">
+          <h3>Hosted Tools</h3>
+          <p>OpenAI-managed tools running in the cloud: <strong>Web Search</strong>, <strong>File Search</strong>, <strong>Code Interpreter</strong>.</p>
+          <pre><code class="language-python">agent = Agent(
+  tools=[
+    WebSearchTool(),
+    CodeInterpreterTool()
+  ]
+)</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════ GUARDRAILS ═══════════════ -->
+    <section>
+      <h2>Primitive 4 — Guardrails</h2>
+      <div class="grid2">
+        <div>
+          <p>Guardrails are <strong>safety checks</strong> that run <em>in parallel</em> with the agent — they can halt the run before an unsafe output reaches the user.</p>
+          <br/>
+          <div class="card accent">
+            <h3>Input Guardrails</h3>
+            <p>Validate user input before the agent processes it. Block jailbreaks, off-topic requests, or sensitive data leaks.</p>
+          </div>
+          <br/>
+          <div class="card yellow">
+            <h3>Output Guardrails</h3>
+            <p>Check agent output before it is returned. Detect hallucinations, PII, or policy violations.</p>
+          </div>
+        </div>
+        <div>
+          <pre><code class="language-python">from agents import (
+  Agent, GuardrailFunctionOutput,
+  InputGuardrail, RunContextWrapper,
+  input_guardrail
+)
+
+@input_guardrail
+async def no_competitor_mentions(
+  ctx: RunContextWrapper,
+  agent: Agent,
+  input: str
+) -> GuardrailFunctionOutput:
+  if "competitor" in input.lower():
+    return GuardrailFunctionOutput(
+      output_info="blocked",
+      tripwire_triggered=True
+    )
+  return GuardrailFunctionOutput(
+    output_info="ok",
+    tripwire_triggered=False
+  )
+
+agent = Agent(
+  input_guardrails=[no_competitor_mentions]
+)</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════ TRACING ═══════════════ -->
+    <section>
+      <h2>Primitives 5–8: Sessions · Tracing · Human-in-Loop · Realtime</h2>
+      <div class="grid2">
+        <div>
+          <div class="card" style="margin-bottom:12px">
+            <h3>💬 Sessions</h3>
+            <p>Automatic multi-turn conversation state. The SDK manages message history so agents remember prior turns without manual plumbing.</p>
+          </div>
+          <div class="card green">
+            <h3>🔍 Tracing</h3>
+            <p>Every agent run is automatically traced. View call trees, token usage, and tool invocations in the OpenAI dashboard — no extra code needed.</p>
+          </div>
+        </div>
+        <div>
+          <div class="card yellow" style="margin-bottom:12px">
+            <h3>👤 Human-in-the-Loop</h3>
+            <p>Pause execution at any point to collect human approval or input. Resumable — the agent picks up exactly where it left off.</p>
+          </div>
+          <div class="card accent">
+            <h3>🎙️ Realtime Agents</h3>
+            <p>Voice-enabled agents powered by <code>gpt-realtime-1.5</code>. All SDK features (tools, guardrails, handoffs) work in voice mode.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════ SDK ARCHITECTURE ═══════════════ -->
+    <section>
+      <h2>SDK Architecture Overview</h2>
+      <div style="margin-top:10px">
+        <div class="flow" style="gap:10px;margin-bottom:16px">
+          <div class="flow-box">Runner.run()</div>
+          <span class="arrow">→</span>
+          <div class="flow-box">Agent Loop</div>
+          <span class="arrow">→</span>
+          <div class="flow-box">LLM Call<br/><span class="dim">OpenAI / other</span></div>
+          <span class="arrow">→</span>
+          <div class="flow-box green">Tool Calls</div>
+          <span class="arrow">→</span>
+          <div class="flow-box green">Handoff?</div>
+        </div>
+        <div class="flow" style="margin-top:0">
+          <div class="flow-box" style="border-color:var(--warn);background:rgba(247,183,49,0.1)">Guardrails ✓</div>
+          <span class="arrow">→</span>
+          <div class="flow-box" style="border-color:var(--warn);background:rgba(247,183,49,0.1)">Sessions / History</div>
+          <span class="arrow">→</span>
+          <div class="flow-box" style="border-color:var(--warn);background:rgba(247,183,49,0.1)">Tracing</div>
+          <span class="arrow">→</span>
+          <div class="flow-box">Final Output</div>
+        </div>
+        <p class="dim" style="margin-top:20px;text-align:center">Each component is independently pluggable — swap the LLM, add guardrails, or instrument with custom tracers without touching other parts.</p>
+      </div>
+    </section>
+
+    <!-- ═══════════════ PART I SUMMARY ═══════════════ -->
+    <section>
+      <h2>Part I — Key Takeaways</h2>
+      <div class="grid3">
+        <div class="card accent">
+          <span class="icon">🧩</span>
+          <h3>Composable</h3>
+          <p>Agents are discrete units — build complex pipelines by wiring small, focused agents together via handoffs.</p>
+        </div>
+        <div class="card green">
+          <span class="icon">🌐</span>
+          <h3>Provider-Agnostic</h3>
+          <p>Works with GPT-4o, Claude, Gemini, Llama, and 100+ other models without framework changes.</p>
+        </div>
+        <div class="card yellow">
+          <span class="icon">🏭</span>
+          <h3>Production-Ready</h3>
+          <p>Built-in tracing, guardrails, human-in-loop, and session management — not afterthoughts.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════ PART II DIVIDER ═══════════════ -->
+    <section>
+      <h2 class="section-title">Part II</h2>
+      <h1 style="margin-top:10px">My Symphony Practice</h1>
+      <p class="dim" style="margin-top:20px">An autonomous software engineering system<br/>built on Claude Code + Linear</p>
+      <div style="margin-top:24px;display:flex;gap:12px;justify-content:center">
+        <span class="tag green">claude-home</span>
+        <span class="tag">poll-linear.mts</span>
+        <span class="tag">run-ticket.sh</span>
+        <span class="tag yellow">Claude Code</span>
+      </div>
+    </section>
+
+    <!-- ═══════════════ MOTIVATION ═══════════════ -->
+    <section>
+      <h2>Motivation: Why Build This?</h2>
+      <div class="grid2">
+        <div>
+          <h3>The Problem</h3>
+          <ul>
+            <li>Frontend engineering has <strong>high volume, repetitive work</strong> — many small tickets, all requiring the same cycle: read → code → test → PR</li>
+            <li>Each ticket takes 30–90 min of human focus even when the logic is straightforward</li>
+            <li>Context switching between tickets is expensive</li>
+          </ul>
+        </div>
+        <div>
+          <h3>The Insight from OpenAI Agents SDK</h3>
+          <p>If an agent can be given <strong>instructions + tools + autonomy</strong>, it can handle the full software engineering loop:</p>
+          <br/>
+          <div class="card accent">
+            <ol>
+              <li>Read the ticket requirements</li>
+              <li>Explore the codebase</li>
+              <li>Write + validate the code</li>
+              <li>Create the PR</li>
+              <li>Respond to review feedback</li>
+            </ol>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════ ARCHITECTURE ═══════════════ -->
+    <section>
+      <h2>System Architecture</h2>
+      <div class="flow" style="flex-direction:column;gap:10px">
+        <div style="display:flex;gap:16px;align-items:center">
+          <div class="flow-box" style="min-width:140px;border-color:var(--warn);background:rgba(247,183,49,0.1)">
+            📋 Linear Board<br/><span class="dim">Todo tickets</span>
+          </div>
+          <span class="arrow">→</span>
+          <div class="flow-box" style="min-width:160px">
+            🔄 poll-linear.mts<br/><span class="dim">runs 24/7 on my Mac</span>
+          </div>
+          <span class="arrow">→</span>
+          <div class="flow-box" style="min-width:140px">
+            🛠 run-ticket.sh<br/><span class="dim">per ticket</span>
+          </div>
+          <span class="arrow">→</span>
+          <div class="flow-box green" style="min-width:150px">
+            🤖 Claude Code<br/><span class="dim">agent session</span>
+          </div>
+        </div>
+        <div style="color:var(--dim);font-size:0.6em;margin:4px 0">↓ creates git worktree, writes code, runs tests</div>
+        <div style="display:flex;gap:16px;align-items:center">
+          <div class="flow-box green" style="min-width:150px">
+            🔃 GitHub PR<br/><span class="dim">created automatically</span>
+          </div>
+          <span class="arrow">→</span>
+          <div class="flow-box" style="min-width:160px;border-color:var(--warn);background:rgba(247,183,49,0.1)">
+            👤 Human Review<br/><span class="dim">I approve / rework</span>
+          </div>
+          <span class="arrow">→</span>
+          <div class="flow-box" style="min-width:140px">
+            🔀 Merge<br/><span class="dim">poller lands PR</span>
+          </div>
+          <span class="arrow">→</span>
+          <div class="flow-box" style="border-color:var(--accent);background:rgba(36,224,138,0.1)">
+            ✅ Done
+          </div>
+        </div>
+      </div>
+      <p class="dim" style="margin-top:16px;text-align:center;font-size:0.65em">
+        The poller runs concurrently — up to N agents in parallel, each in its own git worktree
+      </p>
+    </section>
+
+    <!-- ═══════════════ POLL LINEAR ═══════════════ -->
+    <section>
+      <h2>poll-linear.mts — The Brain</h2>
+      <div class="grid2">
+        <div>
+          <p>A TypeScript script that runs permanently on my Mac as a <strong>daemon</strong>.</p>
+          <br/>
+          <div class="card" style="margin-bottom:10px">
+            <h3>Poll loop (every 30s)</h3>
+            <ol>
+              <li>Fetch tickets from Linear API by state</li>
+              <li>Find <em>eligible</em> tickets (assigned to me, in Todo or In Progress)</li>
+              <li>Skip blocked tickets (missing AC, dependencies)</li>
+              <li>Spawn Claude Code agents for eligible tickets</li>
+              <li>Monitor running agents, handle exits</li>
+            </ol>
+          </div>
+          <div class="card green">
+            <h3>Smart features</h3>
+            <ul>
+              <li>Concurrent agents (configurable max)</li>
+              <li>Rate-limit detection &amp; sleep-in-place</li>
+              <li>Auto-resume after poller restart</li>
+              <li>Feedback mode (rework tickets)</li>
+            </ul>
+          </div>
+        </div>
+        <div>
+          <pre><code class="language-typescript">// Simplified core loop
+while (true) {
+  // Rate-limit pause (sleep in-place)
+  if (rateLimitPausedUntil) {
+    const ms = rateLimitPausedUntil - Date.now();
+    await sleep(ms);          // blocks here
+    rateLimitPausedUntil = null;
+  }
+
+  await poll();
+
+  // For each eligible ticket:
+  if (!runningAgents.has(ticket.id)) {
+    await moveToInProgress(ticket);
+    spawnAgent(ticket, 'fresh');
+  }
+
+  await sleep(POLL_INTERVAL_MS); // 30s
+}</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════ RUN TICKET ═══════════════ -->
+    <section>
+      <h2>run-ticket.sh — The Worker</h2>
+      <div class="grid2">
+        <div>
+          <p>Each ticket gets its <strong>own isolated environment</strong>:</p>
+          <br/>
+          <div class="card accent">
+            <h3>1. Git Worktree</h3>
+            <p>A fresh checkout in <code>~/worktrees/feat/TICKET-slug/</code> — completely isolated from main and from other running agents.</p>
+          </div>
+          <br/>
+          <div class="card">
+            <h3>2. Claude Code Agent</h3>
+            <p>Runs <code>claude --dangerously-skip-permissions</code> with WORKFLOW.md injected as the system prompt. The agent reads the ticket, explores the codebase, writes code, and creates a PR.</p>
+          </div>
+        </div>
+        <div>
+          <pre><code class="language-bash"># 1. Create isolated worktree
+git worktree add \
+  "$WORKTREE_PATH" \
+  -b "feat/$TICKET_ID-$SLUG" \
+  origin/master
+
+# 2. Symlink node_modules (fast setup)
+ln -s "$REPO_ROOT/node_modules" \
+  "$WORKTREE_PATH/node_modules"
+
+# 3. Inject WORKFLOW.md + ticket context
+PROMPT=$(envsubst < ~/.claude/WORKFLOW.md)
+
+# 4. Launch Claude Code
+claude \
+  --dangerously-skip-permissions \
+  --print "$PROMPT"</code></pre>
+          <div class="card green" style="margin-top:10px">
+            <p>Agent output is streamed to <code>logs/symphony-$TICKET_ID.log</code> for debugging.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════ WORKFLOW / SKILLS ═══════════════ -->
+    <section>
+      <h2>WORKFLOW.md — The Agent's Playbook</h2>
+      <div class="grid2">
+        <div>
+          <p>The agent follows a structured <strong>workflow</strong> defined in <code>~/.claude/WORKFLOW.md</code>:</p>
+          <br/>
+          <div class="card">
+            <ol>
+              <li><strong>Read &amp; Plan</strong> — fetch ticket from Linear, identify affected files, create workpad</li>
+              <li><strong>Setup Worktree</strong> — already done by runner</li>
+              <li><strong>Implement</strong> — write code, run type checks per phase</li>
+              <li><strong>Validate</strong> — lint, unit tests, app-specific proof</li>
+              <li><strong>Rebase + PR</strong> — rebase onto master, create PR with <code>symphony</code> label</li>
+              <li><strong>Submit for Review</strong> — post evidence to workpad, move ticket to Human Review</li>
+            </ol>
+          </div>
+        </div>
+        <div>
+          <div class="card accent" style="margin-bottom:12px">
+            <h3>Skills System</h3>
+            <p>Each step is a Markdown <strong>skill file</strong> in <code>~/.claude/skills/</code>. The agent reads the relevant skill before each phase.</p>
+            <br/>
+            <p>Skills are reusable across projects and repos — a <code>create-pr</code> skill works the same for workstream-mono as for claude-home.</p>
+          </div>
+          <div class="card green">
+            <h3>Linear Workpad</h3>
+            <p>Each ticket gets a <strong>persistent workpad comment</strong> — the agent's scratchpad for plans, AC checkboxes, and progress notes. Survives poller restarts.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════ LIVE OUTPUT ═══════════════ -->
+    <section>
+      <h2>Live: poll-linear Output</h2>
+      <div class="terminal">
+<span class="t-blue">╔══════════════════════════════════════════╗</span><br/>
+<span class="t-blue">║</span><span class="t-white">   Symphony Poller — claude-home           </span><span class="t-blue">║</span><br/>
+<span class="t-blue">╚══════════════════════════════════════════╝</span><br/>
+<span class="t-dim">  Board:       WOR (Linear)</span><br/>
+<span class="t-dim">  Projects:    8 configured</span><br/>
+<span class="t-dim">  Max agents:  3</span><br/>
+<span class="t-dim">  Poll:        every 30s</span><br/>
+<br/>
+<span class="t-yellow">[14:02:13] Claiming </span><span class="t-white">WOR-67</span><span class="t-dim"> [Symphony] — Prepare a PPT about introducing symphony</span><br/>
+<span class="t-dim">[14:02:13] → moveToInProgress OK</span><br/>
+<span class="t-dim">[14:02:16] → spawnAgent fresh | worktree feat/WOR-67-...</span><br/>
+<br/>
+<span class="t-dim">┌─────────────────────── Running Agents ──────────────────────────┐</span><br/>
+<span class="t-dim">│</span> <span class="t-green">WOR-63</span> <span class="t-dim">│ hiring     │ 00:12:04 │ writing tests...              </span><span class="t-dim">│</span><br/>
+<span class="t-dim">│</span> <span class="t-yellow">WOR-65</span> <span class="t-dim">│ ODI        │ 00:04:31 │ rebasing onto master...       </span><span class="t-dim">│</span><br/>
+<span class="t-dim">│</span> <span class="t-purple">WOR-67</span> <span class="t-dim">│ Symphony   │ 00:00:03 │ reading ticket...             </span><span class="t-dim">│</span><br/>
+<span class="t-dim">└──────────────────────────────────────────────────────────────────┘</span><br/>
+<br/>
+<span class="t-dim">  Eligible:  0 queued  │  Blocked: 2 (missing AC)</span>
+      </div>
+    </section>
+
+    <!-- ═══════════════ CLAUDE-HOME ═══════════════ -->
+    <section>
+      <h2>claude-home — The Config Repo</h2>
+      <div class="grid2">
+        <div>
+          <p><code>claude-home</code> (Stupidism/claude-home) is my personal <strong>home directory as a git repo</strong> — only the files I care about are tracked.</p>
+          <br/>
+          <div class="card">
+            <pre style="font-size:0.8em;margin:0">~/
+  .claude/
+    CLAUDE.md      ← global agent instructions
+    WORKFLOW.md    ← agent playbook template
+    skills/        ← reusable skill files
+    memory/        ← persistent cross-session memory
+  symphony/
+    config/        ← board configs (wor.json)
+    scripts/       ← poll-linear.mts, run-ticket.sh
+    secrets.env    ← LINEAR_API_KEY (gitignored)</pre>
+          </div>
+        </div>
+        <div>
+          <div class="card accent" style="margin-bottom:12px">
+            <h3>Why version-control ~/.claude?</h3>
+            <ul>
+              <li>Skills improve over time → track the history</li>
+              <li>Reproduce the setup on any machine</li>
+              <li>Each skill improvement is a PR — review it like code</li>
+            </ul>
+          </div>
+          <div class="card green">
+            <h3>Team-friendly design</h3>
+            <p>Fork the repo, add your own <code>boards/*.json</code> for your Linear team, and the system works for any repo. No Workstream-specific hardcoding.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════ RESULTS ═══════════════ -->
+    <section>
+      <h2>Results So Far</h2>
+      <div class="grid3">
+        <div class="card accent" style="text-align:center">
+          <span class="icon">📦</span>
+          <p class="big">60+</p>
+          <p>WOR tickets<br/>processed autonomously</p>
+        </div>
+        <div class="card green" style="text-align:center">
+          <span class="icon">⏱️</span>
+          <p class="big">~80%</p>
+          <p>tickets pass review<br/>without rework</p>
+        </div>
+        <div class="card yellow" style="text-align:center">
+          <span class="icon">🌙</span>
+          <p class="big">24/7</p>
+          <p>poller runs while<br/>I sleep</p>
+        </div>
+      </div>
+      <br/>
+      <div class="grid2">
+        <div class="card">
+          <h3>What works well</h3>
+          <ul class="check">
+            <li>Small, well-defined tickets with clear AC</li>
+            <li>Frontend features following existing patterns</li>
+            <li>Bug fixes with a clear reproduction path</li>
+            <li>Chores: dependency updates, config changes</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>What still needs humans</h3>
+          <ul>
+            <li>Ambiguous or under-specified tickets</li>
+            <li>Cross-repo changes requiring coordination</li>
+            <li>Novel architecture decisions</li>
+            <li>Debugging flaky Cypress E2E tests</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════ LEARNINGS ═══════════════ -->
+    <section>
+      <h2>Key Learnings</h2>
+      <div class="grid2">
+        <div>
+          <div class="card accent" style="margin-bottom:12px">
+            <h3>1. Ticket quality is the bottleneck</h3>
+            <p>A ticket with clear Acceptance Criteria and a reproduction case gets solved autonomously. A vague ticket gets reworked 3 times. <strong>Garbage in → garbage out.</strong></p>
+          </div>
+          <div class="card" style="margin-bottom:12px">
+            <h3>2. Skills are your prompt engineering</h3>
+            <p>Every skill improvement directly improves all future tickets. Treat <code>~/.claude/skills/</code> like production code — review, test, iterate.</p>
+          </div>
+          <div class="card green">
+            <h3>3. Worktrees are the key to parallelism</h3>
+            <p>Git worktrees give each agent a fully isolated environment with zero overhead. Without them, concurrency would require cloning the whole repo each time.</p>
+          </div>
+        </div>
+        <div>
+          <div class="card yellow" style="margin-bottom:12px">
+            <h3>4. Human-in-loop is a feature, not a compromise</h3>
+            <p>The PR review step catches the 20% of cases where the agent went in the wrong direction. Don't try to remove it — it's what makes the system trustworthy.</p>
+          </div>
+          <div class="card" style="margin-bottom:12px">
+            <h3>5. Sleep-in-place for rate limits</h3>
+            <p>Don't return early and re-poll — sleep <em>in-place</em> until the rate limit window expires. This preserves the agent's session state and context.</p>
+          </div>
+          <div class="card accent">
+            <h3>6. The poller is the orchestrator</h3>
+            <p>Like OpenAI's <em>Triage Agent</em>, poll-linear.mts decides what runs, when, and in what order. Good orchestration = good agent performance.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════ COMPARISON ═══════════════ -->
+    <section>
+      <h2>OpenAI Agents SDK vs. My System</h2>
+      <table style="font-size:0.68em;border-collapse:collapse;width:100%;text-align:left">
+        <thead>
+          <tr style="color:var(--primary);border-bottom:1px solid rgba(124,106,247,0.4)">
+            <th style="padding:10px">Concept</th>
+            <th style="padding:10px">OpenAI Agents SDK</th>
+            <th style="padding:10px">My Symphony System</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid rgba(255,255,255,0.08)">
+            <td style="padding:10px;color:var(--accent)">Orchestrator</td>
+            <td style="padding:10px">Triage Agent with Handoffs</td>
+            <td style="padding:10px">poll-linear.mts daemon</td>
+          </tr>
+          <tr style="border-bottom:1px solid rgba(255,255,255,0.08)">
+            <td style="padding:10px;color:var(--accent)">Worker Agents</td>
+            <td style="padding:10px">Specialist Agents (coding, QA…)</td>
+            <td style="padding:10px">Claude Code (one per ticket)</td>
+          </tr>
+          <tr style="border-bottom:1px solid rgba(255,255,255,0.08)">
+            <td style="padding:10px;color:var(--accent)">Tools</td>
+            <td style="padding:10px">Function tools, MCP, Hosted</td>
+            <td style="padding:10px">Bash, Read/Write, GitHub CLI, Linear API</td>
+          </tr>
+          <tr style="border-bottom:1px solid rgba(255,255,255,0.08)">
+            <td style="padding:10px;color:var(--accent)">Guardrails</td>
+            <td style="padding:10px">Input/Output validators</td>
+            <td style="padding:10px">WORKFLOW.md rules + Skills</td>
+          </tr>
+          <tr style="border-bottom:1px solid rgba(255,255,255,0.08)">
+            <td style="padding:10px;color:var(--accent)">Human-in-Loop</td>
+            <td style="padding:10px">Built-in pause/resume</td>
+            <td style="padding:10px">PR Review → Human Review state</td>
+          </tr>
+          <tr>
+            <td style="padding:10px;color:var(--accent)">Tracing</td>
+            <td style="padding:10px">OpenAI dashboard</td>
+            <td style="padding:10px">logs/symphony-$ID.log</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- ═══════════════ CONCLUSION ═══════════════ -->
+    <section>
+      <h2>Conclusion</h2>
+      <div class="grid2">
+        <div>
+          <div class="card accent">
+            <h3>OpenAI Agents SDK taught me…</h3>
+            <ul>
+              <li>Composable, focused agents beat monolithic prompts</li>
+              <li>Guardrails and human-in-loop are first-class primitives</li>
+              <li>Tracing and observability are essential for production agents</li>
+              <li>The orchestrator pattern scales to any domain</li>
+            </ul>
+          </div>
+        </div>
+        <div>
+          <div class="card green">
+            <h3>My practice showed me…</h3>
+            <ul>
+              <li>Agents can handle the full software engineering loop</li>
+              <li>Ticket quality matters more than agent capability</li>
+              <li>Version-controlling your prompts is as important as your code</li>
+              <li>Human review is a feature, not a crutch</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <div class="card" style="margin-top:20px;text-align:center">
+        <p style="font-size:0.9em">The future of software engineering isn't replacing developers — it's <strong style="color:var(--accent)">amplifying their output</strong> by delegating the repetitive work to agents while keeping humans in control of the decisions that matter.</p>
+      </div>
+    </section>
+
+    <!-- ═══════════════ THANK YOU ═══════════════ -->
+    <section>
+      <div style="padding:40px 0;text-align:center">
+        <h1>Thank You</h1>
+        <p style="color:var(--dim);margin-top:16px">Questions?</p>
+        <div style="margin-top:40px;display:flex;gap:24px;justify-content:center;flex-wrap:wrap;font-size:0.75em">
+          <div class="card" style="min-width:180px">
+            <h3>OpenAI Agents SDK</h3>
+            <p class="dim">github.com/openai/<br/>openai-agents-python</p>
+          </div>
+          <div class="card accent" style="min-width:180px">
+            <h3>My claude-home</h3>
+            <p class="dim">github.com/Stupidism/<br/>claude-home</p>
+          </div>
+          <div class="card green" style="min-width:180px">
+            <h3>Slides</h3>
+            <p class="dim">symphony-learn.vercel.app</p>
+          </div>
+        </div>
+        <p style="margin-top:36px;color:var(--dim);font-size:0.6em">Made with Reveal.js · Sun Feng · 2026</p>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/highlight.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/notes/notes.js"></script>
+<script>
+  Reveal.initialize({
+    hash: true,
+    slideNumber: 'c/t',
+    transition: 'slide',
+    backgroundTransition: 'fade',
+    plugins: [RevealHighlight, RevealNotes],
+    width: 1200,
+    height: 700,
+    margin: 0.04,
+  });
+</script>
+</body>
+</html>
