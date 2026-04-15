@@ -104,6 +104,51 @@ function loadSecrets(): void {
 
 loadSecrets();
 
+// ── Sync trusted folders ───────────────────────────────────────────────────────
+
+/**
+ * Sync all board repo worktreesDirs into Claude's localAgentModeTrustedFolders.
+ * Claude Code shows a blocking trust dialog for new directories in interactive
+ * (PTY/remote-control) mode. Pre-registering worktree parent dirs suppresses it.
+ */
+function syncTrustedFolders(boards: BoardConfig[]): void {
+  const claudeConfigPath = path.join(
+    process.env['HOME'] ?? '',
+    'Library/Application Support/Claude/claude_desktop_config.json',
+  );
+  if (!fs.existsSync(claudeConfigPath)) return;
+
+  let config: Record<string, unknown>;
+  try {
+    config = JSON.parse(fs.readFileSync(claudeConfigPath, 'utf8'));
+  } catch {
+    return;
+  }
+
+  const prefs = (config['preferences'] ?? {}) as Record<string, unknown>;
+  const existing = new Set<string>((prefs['localAgentModeTrustedFolders'] as string[] | undefined) ?? []);
+  const added: string[] = [];
+
+  for (const board of boards) {
+    for (const repo of board.repos) {
+      const raw = (repo as unknown as { worktreesDir?: string }).worktreesDir;
+      if (!raw) continue;
+      const expanded = raw.replace(/^~/, process.env['HOME'] ?? '');
+      if (!existing.has(expanded)) {
+        existing.add(expanded);
+        added.push(expanded);
+      }
+    }
+  }
+
+  if (added.length === 0) return;
+
+  prefs['localAgentModeTrustedFolders'] = [...existing];
+  config['preferences'] = prefs;
+  fs.writeFileSync(claudeConfigPath, JSON.stringify(config, null, 2));
+  for (const p of added) log(chalk.dim(`[symphony] Trusted folder added: ${p}`));
+}
+
 const LINEAR_API_KEY = process.env['LINEAR_API_KEY'] ?? '';
 if (!LINEAR_API_KEY) {
   console.error(chalk.red('ERROR: LINEAR_API_KEY not set in $SYMPHONY_ROOT/secrets.env'));
@@ -135,6 +180,8 @@ if (boardFiles.length === 0) {
 const boards: BoardConfig[] = boardFiles.map((f) =>
   JSON.parse(fs.readFileSync(path.join(boardsDir, f), 'utf8'))
 );
+
+syncTrustedFolders(boards);
 
 // Build lookup: linearProjectId → { project, repo }
 interface ProjectResolvedConfig {
