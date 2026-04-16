@@ -1254,6 +1254,17 @@ async function poll(): Promise<void> {
 
     // Human Review: AI review + approval detection
     for (const issue of humanReviewTickets.filter((t) => isEligible(t, board))) {
+      // Fast-path: if the PR was already merged (e.g. reviewer merged directly from
+      // GitHub without going through the Merging state), finalize immediately.
+      try {
+        if (areAllPRsMerged(issue, board)) {
+          log(chalk.green(`[${timestamp()}] ✓ PR merged in Human Review for ${chalk.bold(issue.identifier)} — finalizing`));
+          removeWorktree(issue, board);
+          await moveToDone(board, issue.id, issue.identifier);
+          continue;
+        }
+      } catch { /* best-effort */ }
+
       try {
         const { alreadyHandled, aiReviewed, approved, prUrl } = await checkHumanReviewApproval(issue);
         if (!aiReviewed && prUrl) {
