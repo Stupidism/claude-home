@@ -181,6 +181,7 @@ const boards: BoardConfig[] = boardFiles.map((f) =>
   JSON.parse(fs.readFileSync(path.join(boardsDir, f), 'utf8'))
 );
 
+let lastDashboardLines = 0;
 syncTrustedFolders(boards);
 
 // Build lookup: linearProjectId → { project, repo }
@@ -492,7 +493,6 @@ interface AgentEntry {
 
 const runningAgents = new Map<string, AgentEntry>();
 let isShuttingDown = false;
-let lastDashboardLines = 0;
 let lastEligibleAll: { ticket: Issue; board: BoardConfig }[] = [];
 let lastBlockedAll: { ticket: Issue; board: BoardConfig }[] = [];
 
