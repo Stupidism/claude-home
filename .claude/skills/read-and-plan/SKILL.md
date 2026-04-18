@@ -21,7 +21,31 @@ Once the ticket is successfully fetched:
 - Read ticket title, description, and Acceptance Criteria
 - Read `AGENTS.md` (repo table of contents) if it exists in the current repo root
 
-## Step 2 — Identify affected repos
+## Step 2 — Format check
+
+Evaluate whether the ticket provides enough information to start implementation.
+
+**Evaluation order:**
+
+1. Check the **Requirements** and **Acceptance Criteria** sections for real, specific content (not template placeholders like `<specific, testable condition>`, `Requirement 1`, etc.).
+2. If those sections contain only placeholder text, try to **derive** the requirements and acceptance criteria from the **title** and **Context** section. A ticket with a clear title and a concrete Context paragraph can be actionable even without filled-in Requirements/AC sections.
+3. If — after considering the title and Context — the implementation goal is still ambiguous or untestable, **kick the ticket back to Backlog**:
+   a. Post a comment on the ticket (using the Linear API) that explains specifically what information is missing and what is needed to proceed.
+   b. Transition the ticket to `Backlog` state.
+   c. **Stop. Do not proceed with the remaining steps.**
+
+**What counts as "clear enough":**
+
+- The intended behavior or change is unambiguous.
+- There is at least one testable outcome that can be verified after implementation.
+- The scope (which app / service / workflow) can be determined.
+
+**What does NOT automatically mean "kick back":**
+
+- The Requirements/AC sections use the template format — if the title + Context make the intent clear, that is sufficient.
+- Minor ambiguities that can be resolved by reading the codebase.
+
+## Step 3 — Identify affected repos
 
 Read the board config at `$SYMPHONY_ROOT/config/boards/wor.json` (or the relevant board file). Find the current project in `projects[]` by matching `$TICKET_ID`'s project, then:
 
@@ -32,17 +56,17 @@ Read the board config at `$SYMPHONY_ROOT/config/boards/wor.json` (or the relevan
 
 **If the ticket's project is not in the config** (e.g. `$PROJECT_PATH` is the repo root), treat the current repo as the only affected repo.
 
-## Step 3 — Load project rules
+## Step 4 — Load project rules
 
 For each in-scope repo, check if a `WORKFLOW.md` exists at the project entry path (e.g. `apps/hiring/WORKFLOW.md` in the monorepo, or the root of a standalone repo). If it does, read it — those rules supplement the main workflow.
 
-## Step 4 — Figma audit (only when the ticket contains a Figma link)
+## Step 5 — Figma audit (only when the ticket contains a Figma link)
 
-If no Figma link is present, skip to Step 5.
+If no Figma link is present, skip to Step 6.
 
 If a Figma link is present, **run `$SKILLS_ROOT/figma-audit/SKILL.md` now, before writing any code.** Paste the resulting per-frame change checklist into the workpad. If the audit triggers a scope mismatch and moves the ticket to Backlog, exit immediately.
 
-## Step 5 — Task size assessment
+## Step 6 — Task size assessment
 
 After the Figma audit (or, if no Figma, after reading the ticket), estimate the implementation surface:
 
@@ -56,7 +80,7 @@ After the Figma audit (or, if no Figma, after reading the ticket), estimate the 
 2. Record the subtask IDs in the workpad.
 3. Implement only the first subtask in this session; leave the rest for the poller to pick up.
 
-## Step 6 — Create workpad
+## Step 7 — Create workpad
 
 Find or create the single persistent **Claude Workpad** comment on the ticket.
 
@@ -67,9 +91,9 @@ Find or create the single persistent **Claude Workpad** comment on the ticket.
 - Search existing comments for `## Claude Workpad` before creating one
 - If found: reuse it — never create a second workpad
 - If not found: create exactly one
-- The workpad must include the full per-frame change checklist from Step 4 (if Figma was present)
+- The workpad must include the full per-frame change checklist from Step 5 (if Figma was present)
 - The workpad must list all in-scope repos and which sub-tasks belong to each
 
-## Step 7 — Move to In Progress
+## Step 8 — Move to In Progress
 
 Transition the ticket to **In Progress** using the appropriate ticket system API.
