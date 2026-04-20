@@ -13,15 +13,13 @@
 
 # Symphony Agent 工作流
 
-> ⚠️ **工具禁令 — 使用任何工具前请先阅读：** `mcp__linear-server` MCP 工具在自治模式下**禁止使用** — 这些工具需要交互式 OAuth，此环境中不可用。**绝不调用任何 `mcp__linear-server__*` 工具。** Linear 操作请使用 curl + `$LINEAR_API_KEY`，参见 `$SKILLS_ROOT/linear/SKILL.md`。
->
 > **语言：两个严格区域 — 绝不混用。**
 >
 > - **$PERSONAL_PREFERRED_LANGUAGE**：所有对话输出（状态更新、推理说明、给用户的解释）。
 > - **$WORK_PREFERRED_LANGUAGE**：一切进入仓库或工单系统的内容 — 代码注释、commit 消息、PR 标题/正文、工单评论、workpad 条目。
 > - 任何情况下都不得使用 $NEVER_USE_LANGUAGE。
 >
-> **工单系统：** 所有工单操作使用 `$SKILLS_ROOT/linear/SKILL.md`（curl + `$LINEAR_API_KEY`）。**不得使用 Linear MCP server** — 它需要 OAuth，自治模式下不可用。**如果获取工单失败，立即停止并报告错误 — 不得根据标题或代码库猜测需求。**
+> **工单系统：** 所有 Linear 操作优先使用 `mcp__linear-server__*` MCP 工具（更省 token）；仅当 MCP 工具在当前会话不可用时才回退到 curl。详见 `$SKILLS_ROOT/linear/SKILL.md`。**如果获取工单失败，立即停止并报告错误 — 不得根据标题或代码库猜测需求。**
 >
 > **自治模式：** 永远不要让人类跟进。使用 `$SKILLS_ROOT/commit/SKILL.md` 和 `$SKILLS_ROOT/create-pr/SKILL.md`。
 >

@@ -5,59 +5,39 @@ description: All Linear API operations for Linear tickets — state transitions,
 
 # Linear Operations
 
-> ⚠️ **NEVER use `mcp__linear-server__*` tools** — they require interactive OAuth and will always fail in autonomous mode. Use only the curl commands below.
+**Prefer `mcp__linear-server__*` MCP tools for all Linear operations.** They are far more token-efficient than curl+GraphQL and handle escaping automatically. Use curl only as a fallback when the Linear MCP tools are not available in the current session.
 
-All ticket operations go through Linear. Use the curl commands below.
-`$LINEAR_API_KEY` and `$TICKET_ID` are already set in the Symphony environment.
+`$LINEAR_API_KEY` and `$TICKET_ID` are set in the Symphony environment.
 
 ---
 
-## Ticket State Transitions
+## Common operations (MCP)
 
-### Step 1 — Get the ticket's internal UUID
+Pick the matching MCP tool — names may vary slightly per MCP version; match by intent:
 
-```bash
-TICKET_UUID=$(curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d "{\"query\": \"{ issue(id: \\\"${TICKET_ID}\\\") { id } }\"}" \
-  | node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).data.issue.id)")
-```
+| Intent | MCP tool (typical) |
+|---|---|
+| Get ticket details | `mcp__linear-server__get_issue` with `id: $TICKET_ID` |
+| List comments on a ticket | `mcp__linear-server__list_comments` |
+| Create a comment (workpad) | `mcp__linear-server__create_comment` |
+| Update a comment (workpad) | `mcp__linear-server__update_comment` |
+| Change ticket state | `mcp__linear-server__update_issue` with `state: "In Progress" \| "Human Review" \| "Merging" \| "Done"` |
+| Create a new ticket (sub-task) | `mcp__linear-server__create_issue` |
+| Link child to parent | `mcp__linear-server__update_issue` with `parentId` |
 
-### Step 2 — Update the state
-
-```bash
-# → In Progress   (at start of work)
-STATE_ID="$STATE_IN_PROGRESS"
-
-# → Human Review  (after PR created and evidence posted)
-STATE_ID="$STATE_HUMAN_REVIEW"
-
-# → Merging       (after PR approved)
-STATE_ID="$STATE_MERGING"
-
-# → Done          (after squash-merge)
-STATE_ID="$STATE_DONE"
-
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d "{\"query\": \"mutation { issueUpdate(id: \\\"${TICKET_UUID}\\\", input: { stateId: \\\"${STATE_ID}\\\" }) { success } }\"}"
-```
+State names (string form) are stable; you do not need to resolve UUIDs when the MCP tool accepts a name.
 
 ---
 
 ## Workpad
 
-The workpad is a **single persistent comment** on the Linear ticket. It is the single source of truth for progress, evidence, and notes.
+A **single persistent comment** on the Linear ticket — the source of truth for progress, evidence, and notes.
 
 **Rules:**
-
-- Search existing comments for `## Claude Workpad` before creating one
-- If found: reuse it — never create a second workpad comment
-- If not found: create exactly one
-- Never post separate "done" or "summary" comments — all updates go in the workpad only
-- Do not include issue ID or branch name in the workpad (those belong in Linear issue fields)
+- Search existing comments for `## Claude Workpad` before creating one.
+- If found: reuse it — never create a second workpad.
+- All progress updates go in the workpad only (never separate "done" / "summary" comments).
+- Do not repeat issue ID or branch name inside the workpad (those live in Linear fields).
 
 **Template:**
 
@@ -85,132 +65,40 @@ The workpad is a **single persistent comment** on the Linear ticket. It is the s
 
 ### Notes
 
-- <short progress note with timestamp>
+- <short progress note>
 
 ### Confusions
 
-- <only include when something was confusing during execution>
+- <only when execution was unclear>
 ````
 
-The environment stamp (`<host>:<abs-workdir>@<short-sha>`) must be at the top in a code fence. The `### Confusions` section is required when any part of execution was unclear — omit it only when execution was straightforward.
+The env stamp code fence at the top is required. Include `### Confusions` only when something was actually confusing.
 
 ---
 
-## Post a Linear Comment (create workpad)
+## Curl fallback (only when MCP is unavailable)
 
-Run **after** getting `TICKET_UUID` above.
-
-```bash
-# Replace the body text as needed (escape newlines as \n, quotes as \")
-COMMENT_BODY="## Claude Workpad — ${TICKET_ID}\n\`\`\`text\n$(hostname):$(pwd)@$(git rev-parse --short HEAD)\n\`\`\`\n\n### Plan\n- [ ] Understand scope\n- [ ] Implement\n- [ ] Lint & unit tests\n- [ ] App-specific proof of work\n- [ ] Create PR\n\n### Acceptance Criteria\n- [ ] AC 1\n\n### Validation\n- [ ] lint & unit tests: nx affected --target=lint,test --base=origin/master\n- [ ] App-specific proof of work\n- [ ] CI checks green\n\n### Notes\n- Started"
-
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d "{\"query\": \"mutation { commentCreate(input: { issueId: \\\"${TICKET_UUID}\\\", body: \\\"${COMMENT_BODY}\\\" }) { success comment { id } } }\"}"
-```
-
-Save the returned `comment.id` — use it for all subsequent workpad updates via `commentUpdate`.
-
----
-
-## Read Linear Ticket Comments
+Get the ticket's internal UUID, then mutate. State UUIDs are exposed via envvars `$STATE_IN_PROGRESS`, `$STATE_HUMAN_REVIEW`, `$STATE_MERGING`, `$STATE_DONE`.
 
 ```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d "{\"query\": \"{ issue(id: \\\"${TICKET_ID}\\\") { comments { nodes { id body createdAt } } } }\"}" \
-  | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); d.data.issue.comments.nodes.forEach(c=>console.log(c.createdAt, c.id, c.body))"
-```
-
----
-
-## Update an Existing Comment
-
-```bash
-COMMENT_ID="<saved-from-create>"
-UPDATED_BODY="## Claude Workpad — ${TICKET_ID}\n..."
-
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d "{\"query\": \"mutation { commentUpdate(id: \\\"${COMMENT_ID}\\\", input: { body: \\\"${UPDATED_BODY}\\\" }) { success } }\"}"
-```
-
----
-
-## Create a Linear Ticket
-
-Use when you need to file a new ticket (e.g. a sub-task split off from the current one).
-
-### Step 1 — Get the team's state UUID for Backlog
-
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "{ workflowStates(filter: { team: { id: { eq: \"'$TEAM_ID'\" } }, name: { eq: \"Backlog\" } }) { nodes { id name } } }"}' \
-  | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); console.log(d.data.workflowStates.nodes[0]?.id)"
-```
-
-`$TEAM_ID` is the `teamId` in the board config (e.g. `wor.json`).
-
-### Step 2 — Choose a template
-
-Read `$SYMPHONY_ROOT/config/linear-templates.json`. Pick the template that matches the ticket type:
-
-| Type    | Use when                                                         |
-|---------|------------------------------------------------------------------|
-| Feature | New functionality or enhancement                                 |
-| Bug     | Something is broken                                              |
-| Chore   | Infrastructure, tooling, dependency updates, maintenance         |
-
-### Step 3 — Fill in the template body
-
-Use the `descriptionMarkdown` from the chosen template. Replace placeholders (`<why this work is needed>`, `<specific, testable condition>`, etc.) with the actual content. Do NOT leave placeholder text in the final ticket.
-
-### Step 4 — Create the issue
-
-```bash
-# Set these variables:
-TEAM_ID="<from board config>"
-STATE_ID="<backlog state UUID from Step 1>"
-TITLE="<short imperative title, e.g. 'add retry logic to webhook handler'>"
-DESCRIPTION="<filled-in template body — escape newlines as \\n, quotes as \\\">"
-PRIORITY=0  # 0=No priority, 1=Urgent, 2=High, 3=Medium, 4=Low
-LABEL_ID=""  # optional: Linear label UUID
-
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d "{\"query\": \"mutation { issueCreate(input: { teamId: \\\"${TEAM_ID}\\\", stateId: \\\"${STATE_ID}\\\", title: \\\"${TITLE}\\\", description: \\\"${DESCRIPTION}\\\", priority: ${PRIORITY} }) { success issue { id identifier url } } }\"}" \
-  | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); const i=d.data.issueCreate.issue; console.log('Created:', i.identifier, i.url)"
-```
-
-### Step 5 — Link to parent (optional)
-
-If this is a sub-task of the current ticket, link it:
-
-```bash
-PARENT_TICKET_UUID=$(curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
+TICKET_UUID=$(curl -s -X POST https://api.linear.app/graphql \
+  -H "Authorization: $LINEAR_API_KEY" -H "Content-Type: application/json" \
   -d "{\"query\": \"{ issue(id: \\\"${TICKET_ID}\\\") { id } }\"}" \
   | node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).data.issue.id)")
 
-# Use the new issue's UUID returned from Step 4
-NEW_ISSUE_UUID="<uuid from create response>"
-
+# Change state
 curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d "{\"query\": \"mutation { issueUpdate(id: \\\"${NEW_ISSUE_UUID}\\\", input: { parentId: \\\"${PARENT_TICKET_UUID}\\\" }) { success } }\"}"
+  -H "Authorization: $LINEAR_API_KEY" -H "Content-Type: application/json" \
+  -d "{\"query\": \"mutation { issueUpdate(id: \\\"${TICKET_UUID}\\\", input: { stateId: \\\"${STATE_IN_PROGRESS}\\\" }) { success } }\"}"
 ```
+
+For comment bodies with newlines/quotes, pass the body as a GraphQL variable (JSON-stringify via `node -e`) rather than inlining into the query string. Reads use `issue(id) { comments { nodes { id body createdAt } } }`; creates use `commentCreate(input: { issueId, body })`; updates use `commentUpdate(id, input: { body })`.
+
+For ticket creation: resolve the team's Backlog state via `workflowStates(filter: { team: { id: { eq: $TEAM_ID } }, name: { eq: "Backlog" } })`, then `issueCreate(input: { teamId, stateId, title, description, priority })`. Link to parent with `issueUpdate(input: { parentId })`.
 
 ---
 
-## Ticket Format (for PMs / engineers writing tickets)
+## Ticket format (for humans writing tickets)
 
 ```markdown
 ## Context
@@ -225,7 +113,6 @@ curl -s -X POST https://api.linear.app/graphql \
 ## Acceptance Criteria
 
 - [ ] AC 1: <specific, testable condition>
-- [ ] AC 2: <specific, testable condition>
 
 ## Figma
 
