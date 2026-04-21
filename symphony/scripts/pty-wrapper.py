@@ -12,7 +12,7 @@ Usage:
 The prompt file is read and deleted immediately after reading.
 """
 
-import pty, os, subprocess, sys, signal
+import pty, os, subprocess, sys, signal, re
 
 prompt = open(sys.argv[1]).read()
 os.unlink(sys.argv[1])
@@ -70,15 +70,37 @@ def forward_signal(signum, frame):
 signal.signal(signal.SIGTERM, forward_signal)
 signal.signal(signal.SIGINT, forward_signal)
 
-# Discard PTY output (visible on claude.ai instead)
-# On macOS, os.read returns b'' (EOF) instead of raising OSError when the
-# PTY slave closes; check for empty read to avoid an infinite spin loop.
+# Scan PTY output for the rate-limit banner so the poller can pause the
+# session (see poll-linear.mts RATE_LIMIT_PATTERN). The TUI output is
+# otherwise discarded — it's visible on claude.ai. On macOS, os.read
+# returns b'' (EOF) instead of raising OSError when the PTY slave closes.
+RATE_LIMIT_RE = re.compile(rb"You(?:'|\xe2\x80\x99)ve hit your limit[^\r\n]*", re.IGNORECASE)
+ANSI_RE = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|[\x00-\x08\x0b-\x1f]")
+SCAN_BUF_MAX = 8192
+scan_buf = b""
+
 while True:
     try:
         data = os.read(master_fd, 4096)
         if not data:
             break
     except OSError:
+        break
+    # Strip ANSI escape sequences and control bytes before matching so that
+    # cursor-positioning codes in the TUI don't break the pattern.
+    scan_buf = (scan_buf + ANSI_RE.sub(b"", data))[-SCAN_BUF_MAX:]
+    m = RATE_LIMIT_RE.search(scan_buf)
+    if m:
+        # Write the cleaned matched line to stdout so it lands in
+        # symphony-<ticket>.log where the poller can grep it.
+        try:
+            os.write(1, m.group(0) + b"\n")
+        except OSError:
+            pass
+        try:
+            proc.terminate()
+        except Exception:
+            pass
         break
 
 proc.wait()
