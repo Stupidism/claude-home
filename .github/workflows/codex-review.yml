@@ -9,6 +9,11 @@ on:
         description: "Pull request number to trigger @codex review on"
         required: true
         type: string
+      body:
+        description: "Comment body to post (defaults to '@codex review')"
+        required: false
+        type: string
+        default: "@codex review"
 
 permissions:
   contents: read
@@ -21,15 +26,16 @@ jobs:
       (github.event_name == 'issue_comment' &&
        github.event.issue.pull_request != null &&
        format('{0}', github.event.comment.user.id) == vars.CODEX_REVIEW_REQUESTER_ID &&
-       github.event.comment.body == 'SunStupic: @codex review')
+       startsWith(github.event.comment.body, '@codex'))
     runs-on: ubuntu-latest
     steps:
-      - name: Post @codex review and clean up trigger/error comments
+      - name: Post @codex comment as Stupidism and clean up failed attempts
         env:
           GH_TOKEN: ${{ secrets.STUPIDISM_COMMENT_ONLY_TOKEN }}
           PR_NUMBER: ${{ github.event.inputs.pr_number || github.event.issue.number }}
           REPO: ${{ github.repository }}
           REQUESTER_ID: ${{ vars.CODEX_REVIEW_REQUESTER_ID }}
+          BODY: ${{ github.event.inputs.body || github.event.comment.body }}
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
@@ -37,18 +43,17 @@ jobs:
             exit 1
           fi
 
-          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "@codex review"
+          # Re-post the requester's intent (or the dispatch input) as Stupidism
+          # so the codex connector accepts it.
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$BODY"
 
-          # Clean up prior trigger/error comments on the PR once the real
-          # @codex review has been posted successfully:
-          #   - `SunStupic: @codex review` — this workflow's trigger phrase
-          #   - `@codex ...` from the requester — direct attempts that failed
-          #   - `To use Codex here...` from the codex connector bot — rejection replies
+          # Clean up once the real @codex comment is posted:
+          #   - the requester's own `@codex ...` attempts that codex rejected
+          #   - `To use Codex here...` replies from the codex connector bot
           gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate --jq "
             .[]
             | select(
-                ((.user.id | tostring) == \"$REQUESTER_ID\" and
-                 (.body == \"SunStupic: @codex review\" or (.body | startswith(\"@codex\"))))
+                ((.user.id | tostring) == \"$REQUESTER_ID\" and (.body | startswith(\"@codex\")))
                 or
                 (.user.login == \"chatgpt-codex-connector\" and (.body | startswith(\"To use Codex here\")))
               )
