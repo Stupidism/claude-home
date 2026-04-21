@@ -16,10 +16,12 @@ permissions:
 jobs:
   trigger:
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.issue.pull_request != null &&
-       github.event.comment.user.login == 'SunStupic' &&
-       contains(github.event.comment.body, 'SunStupic: @codex review'))
+      (github.event_name == 'workflow_dispatch' &&
+       format('{0}', github.event.sender.id) == vars.CODEX_REVIEW_REQUESTER_ID) ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request != null &&
+       format('{0}', github.event.comment.user.id) == vars.CODEX_REVIEW_REQUESTER_ID &&
+       github.event.comment.body == 'SunStupic: @codex review')
     runs-on: ubuntu-latest
     steps:
       - name: Post @codex review comment as Stupidism

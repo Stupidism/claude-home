@@ -9,7 +9,8 @@
 
 # GitHub Actions workflows
 !.github/
-!.github/**
+!.github/workflows/
+!.github/workflows/**
 
 # .claude config directory — subdirectory .gitignore handles runtime exclusions
 !.claude/
