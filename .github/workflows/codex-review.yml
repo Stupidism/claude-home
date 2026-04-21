@@ -55,7 +55,7 @@ jobs:
             | select(
                 ((.user.id | tostring) == \"$REQUESTER_ID\" and (.body | startswith(\"@codex\")))
                 or
-                (.user.login == \"chatgpt-codex-connector\" and (.body | startswith(\"To use Codex here\")))
+                (.user.login == \"chatgpt-codex-connector[bot]\" and (.body | startswith(\"To use Codex here\")))
               )
             | .id
           " | while read -r comment_id; do
