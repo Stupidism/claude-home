@@ -12,7 +12,7 @@ Usage:
 The prompt file is read and deleted immediately after reading.
 """
 
-import pty, os, subprocess, sys, signal
+import pty, os, subprocess, sys, signal, re
 
 prompt = open(sys.argv[1]).read()
 os.unlink(sys.argv[1])
@@ -70,9 +70,27 @@ def forward_signal(signum, frame):
 signal.signal(signal.SIGTERM, forward_signal)
 signal.signal(signal.SIGINT, forward_signal)
 
-# Discard PTY output (visible on claude.ai instead)
-# On macOS, os.read returns b'' (EOF) instead of raising OSError when the
-# PTY slave closes; check for empty read to avoid an infinite spin loop.
+# Scan PTY output for the rate-limit banner so the poller can pause the
+# session (see poll-linear.mts RATE_LIMIT_PATTERN). The TUI output is
+# otherwise discarded — it's visible on claude.ai. On macOS, os.read
+# returns b'' (EOF) instead of raising OSError when the PTY slave closes.
+# Require the full banner (with "resets <time>") terminated by \r or \n
+# so we only match a complete line and avoid false positives on arbitrary
+# user-typed text that happens to contain "You've hit your limit".
+RATE_LIMIT_RE = re.compile(
+    rb"You(?:'|\xe2\x80\x99)ve hit your limit[^\r\n]*resets[^\r\n]*[\r\n]",
+    re.IGNORECASE,
+)
+# Strip ANSI CSI/OSC sequences and C0 control bytes except \t (0x09),
+# \n (0x0a), and \r (0x0d) — the latter two must survive so RATE_LIMIT_RE
+# can see the line terminator.
+ANSI_RE = re.compile(
+    rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|[\x00-\x08\x0b\x0c\x0e-\x1f]"
+)
+SCAN_BUF_MAX = 8192
+scan_buf = b""  # raw bytes — ANSI is stripped on the whole buffer each iter
+                # so escape sequences split across reads are handled cleanly.
+
 while True:
     try:
         data = os.read(master_fd, 4096)
@@ -80,6 +98,25 @@ while True:
             break
     except OSError:
         break
+    scan_buf = (scan_buf + data)[-SCAN_BUF_MAX:]
+    m = RATE_LIMIT_RE.search(ANSI_RE.sub(b"", scan_buf))
+    if m:
+        # Write the cleaned matched line to stdout so it lands in
+        # symphony-<ticket>.log where the poller can grep it.
+        line = m.group(0).rstrip(b"\r\n")
+        try:
+            os.write(1, line + b"\n")
+        except OSError:
+            pass
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        break
 
-proc.wait()
+try:
+    proc.wait(timeout=5)
+except subprocess.TimeoutExpired:
+    proc.kill()
+    proc.wait()
 sys.exit(proc.returncode)
