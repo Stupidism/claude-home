@@ -489,6 +489,7 @@ interface AgentEntry {
   spawnedForMerging: boolean;
   worktreePath: string;
   board: BoardConfig;
+  logOffset: number;
 }
 
 const runningAgents = new Map<string, AgentEntry>();
@@ -827,6 +828,8 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
   const worktreePath = path.join(worktreesDir, folder);
 
   const logFile = path.join(logsDir, `symphony-${ticket.identifier}.log`);
+  let spawnLogOffset = 0;
+  try { spawnLogOffset = fs.statSync(logFile).size; } catch { /* first run, file missing */ }
   const logFd = fs.openSync(logFile, 'a');
   const stdio: child_process.StdioOptions = ['ignore', logFd, logFd];
 
@@ -890,6 +893,7 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
     spawnedForMerging: forMerging,
     worktreePath,
     board,
+    logOffset: spawnLogOffset,
   });
 
   log(chalk.green(`[${timestamp()}] ▶ Agent started`) + ` ${chalk.bold(ticket.identifier)} (PID: ${child.pid}) → logs/symphony-${ticket.identifier}.log`);
@@ -918,52 +922,66 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
       try {
         const fd = fs.openSync(agentLog, 'r');
         const stat = fs.fstatSync(fd);
-        const readSize = Math.min(4096, stat.size);
-        const buf = Buffer.alloc(readSize);
-        fs.readSync(fd, buf, 0, readSize, stat.size - readSize);
+        // Only scan bytes written during THIS run to avoid matching a banner
+        // left by a prior run-ticket.sh invocation in the append-only log.
+        const offset = Math.min(agent?.logOffset ?? 0, stat.size);
+        const runBytes = stat.size - offset;
+        const readSize = Math.min(65536, runBytes);
+        if (readSize > 0) {
+          const buf = Buffer.alloc(readSize);
+          fs.readSync(fd, buf, 0, readSize, stat.size - readSize);
+          logTail = buf.toString();
+          hitRateLimit = RATE_LIMIT_PATTERN.test(logTail);
+        }
         fs.closeSync(fd);
-        logTail = buf.toString();
-        hitRateLimit = RATE_LIMIT_PATTERN.test(logTail);
       } catch { /* unreadable */ }
 
       if (hitRateLimit) {
         const resetDate = parseRateLimitResetTime(logTail);
+        const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+        const pauseMs = resetDate ? resetDate.getTime() - Date.now() : null;
+        const suspicious = pauseMs !== null && pauseMs > SIX_HOURS_MS;
 
-        // Collect session info for all running agents before killing them
-        rateLimitPausedSessions = [];
-        for (const [id, agentEntry] of runningAgents) {
-          const sessionFile = path.join(agentEntry.worktreePath, '.claude-session-id');
-          if (fs.existsSync(sessionFile)) {
-            const sessionId = fs.readFileSync(sessionFile, 'utf8').trim();
-            if (sessionId) {
-              rateLimitPausedSessions.push({
-                ticket: agentEntry.ticket,
-                board: agentEntry.board,
-                sessionId,
-                worktreePath: agentEntry.worktreePath,
-              });
-            }
-          }
-          void id; // suppress unused warning
-        }
-        // Also include the current (already-exited) agent's session
-        if (!runningAgents.has(ticket.identifier)) {
-          const sessionFile = path.join(agent?.worktreePath ?? '', '.claude-session-id');
-          if (agent?.worktreePath && fs.existsSync(sessionFile)) {
-            const sessionId = fs.readFileSync(sessionFile, 'utf8').trim();
-            if (sessionId) rateLimitPausedSessions.push({ ticket, board, sessionId, worktreePath: agent.worktreePath });
-          }
-        }
-
-        for (const { proc } of runningAgents.values()) proc.kill('SIGTERM');
-
-        if (resetDate) {
-          const pauseMs = Math.max(0, resetDate.getTime() - Date.now());
-          log(chalk.yellow(`[${timestamp()}] ⏸ Rate limit hit: ${chalk.bold(ticket.identifier)} — pausing until ${resetDate.toLocaleTimeString()} (~${Math.ceil(pauseMs / 60000)}min, incl. +5min buffer)`));
-          rateLimitPausedUntil = resetDate;
-        } else {
+        if (!resetDate) {
           log(chalk.red(`[${timestamp()}] ⛔ Rate limit hit: ${ticket.identifier} — could not parse reset time, stopping poller`));
           process.exit(1);
+        } else if (suspicious) {
+          // Likely a weekly-limit banner or stale parse; don't blind-pause for hours.
+          log(chalk.yellow(`[${timestamp()}] ⚠ Suspicious reset time (>6h, parsed ${resetDate.toLocaleTimeString()}) — ignoring banner for ${chalk.bold(ticket.identifier)}`));
+          const failures = (failureCounts.get(ticket.identifier) ?? 0) + 1;
+          failureCounts.set(ticket.identifier, failures);
+          log(chalk.red(`[${timestamp()}] ✗ Agent failed:`) + ` ${chalk.bold(ticket.identifier)} (exit ${code ?? signal}, attempt ${failures}/${MAX_RETRIES})`);
+        } else {
+          // Collect session info for all running agents before killing them
+          rateLimitPausedSessions = [];
+          for (const [id, agentEntry] of runningAgents) {
+            const sessionFile = path.join(agentEntry.worktreePath, '.claude-session-id');
+            if (fs.existsSync(sessionFile)) {
+              const sessionId = fs.readFileSync(sessionFile, 'utf8').trim();
+              if (sessionId) {
+                rateLimitPausedSessions.push({
+                  ticket: agentEntry.ticket,
+                  board: agentEntry.board,
+                  sessionId,
+                  worktreePath: agentEntry.worktreePath,
+                });
+              }
+            }
+            void id; // suppress unused warning
+          }
+          // Also include the current (already-exited) agent's session
+          if (!runningAgents.has(ticket.identifier)) {
+            const sessionFile = path.join(agent?.worktreePath ?? '', '.claude-session-id');
+            if (agent?.worktreePath && fs.existsSync(sessionFile)) {
+              const sessionId = fs.readFileSync(sessionFile, 'utf8').trim();
+              if (sessionId) rateLimitPausedSessions.push({ ticket, board, sessionId, worktreePath: agent.worktreePath });
+            }
+          }
+
+          for (const { proc } of runningAgents.values()) proc.kill('SIGTERM');
+
+          log(chalk.yellow(`[${timestamp()}] ⏸ Rate limit hit: ${chalk.bold(ticket.identifier)} — pausing until ${resetDate.toLocaleTimeString()} (~${Math.ceil(pauseMs! / 60000)}min, incl. +5min buffer)`));
+          rateLimitPausedUntil = resetDate;
         }
       } else {
         const failures = (failureCounts.get(ticket.identifier) ?? 0) + 1;
@@ -1467,6 +1485,8 @@ while (true) {
       const logsDir = path.join(SYMPHONY_ROOT, 'logs');
       fs.mkdirSync(logsDir, { recursive: true });
       const logFile = path.join(logsDir, `symphony-${pausedTicket.identifier}.log`);
+      let resumeLogOffset = 0;
+      try { resumeLogOffset = fs.statSync(logFile).size; } catch { /* file missing */ }
       const logFd = fs.openSync(logFile, 'a');
       const activePidFile = path.join(logsDir, `agent-pid-${pausedTicket.identifier}.pid`);
 
@@ -1488,6 +1508,7 @@ while (true) {
         spawnedForMerging: false,
         worktreePath,
         board: pausedBoard,
+        logOffset: resumeLogOffset,
       });
 
       child.on('error', (err) => {
