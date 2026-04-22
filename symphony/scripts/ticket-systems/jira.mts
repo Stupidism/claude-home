@@ -88,12 +88,15 @@ export const jiraAdapter: TicketSystemAdapter = {
     if (assigneeId) clauses.push(`assignee = "${escapeJql(assigneeId)}"`);
     const jql = clauses.join(' AND ') + ' ORDER BY created ASC';
 
+    // Use the "enhanced" search/jql endpoint — /rest/api/2/search is being
+    // removed from Jira Cloud. The new endpoint uses nextPageToken for paging;
+    // 50 per Symphony state is plenty, so we only ever fetch the first page.
     const body = JSON.stringify({
       jql,
       fields: ['summary', 'description', 'status', 'assignee', 'project'],
       maxResults: 50,
     });
-    const res = await jiraRequest(board, '/rest/api/2/search', { method: 'POST', body });
+    const res = await jiraRequest(board, '/rest/api/2/search/jql', { method: 'POST', body });
     const data = (await res.json()) as { issues: JiraIssue[] };
     return data.issues.map((i) => toIssue(board, i));
   },

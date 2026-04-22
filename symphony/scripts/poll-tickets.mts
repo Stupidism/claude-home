@@ -57,13 +57,20 @@ interface ProjectConfig {
   repos: Array<{ name: string; path: string }>;
 }
 
+type TicketSystem = 'linear' | 'jira';
+
 interface BoardConfig {
   /** Linear: team UUID. Jira: project key (e.g. "UP"). */
   teamId: string;
   name: string;
   ticketPrefix: string;
-  /** "linear" (default) or "jira". */
-  ticketSystem: string;
+  /** "linear" (default) or "jira". Missing defaults to linear; typos are rejected. */
+  ticketSystem?: TicketSystem;
+  /** Per-board assignee override. Linear: user UUID. Jira: Jira accountId.
+   *  When unset, boards fall back to the global `symphony.json` assigneeId — which
+   *  only makes sense if every board shares the same backend. Mixed Linear+Jira
+   *  configs must set this explicitly on at least the Jira board(s). */
+  assigneeId?: string;
   /** Optional comment to post on a PR to trigger an external AI review bot.
    *  When set, the poller posts this comment instead of having Claude review the diff itself.
    *  If absent, AI review is skipped entirely for this board. */
@@ -87,9 +94,22 @@ interface BoardConfig {
   projects: ProjectConfig[];
 }
 
+/** Resolve the adapter for a board. Unknown values are rejected rather than
+ *  silently falling back to Linear — catches `ticketSystem: "jirA"` typos. */
+function ticketSystemFor(board: BoardConfig): TicketSystem {
+  const system = board.ticketSystem ?? 'linear';
+  if (system !== 'linear' && system !== 'jira') {
+    throw new Error(`[config] Board "${board.name}" has unknown ticketSystem: ${JSON.stringify(system)}. Expected "linear" or "jira".`);
+  }
+  return system;
+}
+
 function getAdapter(board: BoardConfig): TicketSystemAdapter {
-  if (board.ticketSystem === 'jira') return jiraAdapter;
-  return linearAdapter;
+  return ticketSystemFor(board) === 'jira' ? jiraAdapter : linearAdapter;
+}
+
+function assigneeIdFor(board: BoardConfig): string {
+  return board.assigneeId ?? ASSIGNEE_ID;
 }
 
 interface SymphonyConfig {
@@ -240,8 +260,8 @@ if (ASSIGNEE_ID === 'YOUR_LINEAR_USER_UUID') {
 }
 
 // Per-backend credential checks — only enforce what the configured boards actually need.
-const hasLinearBoard = boards.some((b) => (b.ticketSystem ?? 'linear') === 'linear');
-const hasJiraBoard = boards.some((b) => b.ticketSystem === 'jira');
+const hasLinearBoard = boards.some((b) => ticketSystemFor(b) === 'linear');
+const hasJiraBoard = boards.some((b) => ticketSystemFor(b) === 'jira');
 
 if (hasLinearBoard && !process.env['LINEAR_API_KEY']) {
   console.error(chalk.red('ERROR: LINEAR_API_KEY not set in $SYMPHONY_ROOT/secrets.env (required by a Linear board)'));
@@ -254,7 +274,7 @@ if (hasJiraBoard) {
     console.error(chalk.yellow('  Create a Jira API token at https://id.atlassian.com/manage-profile/security/api-tokens'));
     process.exit(1);
   }
-  for (const b of boards.filter((b) => b.ticketSystem === 'jira')) {
+  for (const b of boards.filter((b) => ticketSystemFor(b) === 'jira')) {
     if (!b.jiraBaseUrl) {
       console.error(chalk.red(`ERROR: Jira board "${b.name}" is missing "jiraBaseUrl" (e.g. "https://your-org.atlassian.net")`));
       process.exit(1);
@@ -265,7 +285,7 @@ if (hasJiraBoard) {
 // ── Ticket-system dispatch ────────────────────────────────────────────────────
 
 async function fetchTicketsByState(board: BoardConfig, stateKey: StateKey): Promise<Issue[]> {
-  return getAdapter(board).fetchTicketsByState(board, stateKey, ASSIGNEE_ID);
+  return getAdapter(board).fetchTicketsByState(board, stateKey, assigneeIdFor(board));
 }
 
 async function fetchTicketStateId(board: BoardConfig, identifier: string): Promise<string | null> {
@@ -830,7 +850,7 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
     STATE_MERGING: board.states.merging,
     STATE_DONE: board.states.done,
     // Ticket system
-    TICKET_SYSTEM: board.ticketSystem,
+    TICKET_SYSTEM: ticketSystemFor(board),
     // Symphony root
     SYMPHONY_ROOT,
     // Language preferences
@@ -1205,12 +1225,14 @@ async function poll(): Promise<void> {
       ]);
     } catch (err) {
       const msg = String(err);
-      if (msg.includes('Argument Validation Error')) {
+      const system = ticketSystemFor(board);
+      if (system === 'linear' && msg.includes('Argument Validation Error')) {
         log(chalk.red(`[${timestamp()}] Linear API 参数错误 (${board.name})`));
         log(chalk.yellow(`  可能原因：assigneeId 或 state ID 格式不合法。`));
         log(chalk.cyan(`  检查 ${path.join(CONFIG_DIR, 'symphony.json')} 里的 assigneeId 是否为有效 UUID。`));
       } else {
-        log(chalk.red(`[${timestamp()}] Linear API error (${board.name}): ${err}`));
+        const label = system === 'jira' ? 'Jira' : 'Linear';
+        log(chalk.red(`[${timestamp()}] ${label} API error (${board.name}): ${err}`));
       }
       continue;
     }

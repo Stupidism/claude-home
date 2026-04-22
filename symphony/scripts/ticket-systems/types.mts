@@ -35,7 +35,8 @@ export type StateKey = keyof StateKeys;
 export interface BoardLike {
   name: string;
   ticketPrefix: string;
-  ticketSystem: string;
+  /** Missing is allowed; the poller defaults to "linear" via `ticketSystemFor`. */
+  ticketSystem?: 'linear' | 'jira';
   teamId: string;
   states: StateKeys;
   /** Jira-only. Transition IDs keyed by the same Symphony state keys. */

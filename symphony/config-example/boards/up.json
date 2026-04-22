@@ -5,6 +5,8 @@
   "ticketPrefix": "UP",
   "ticketSystem": "jira",
   "jiraBaseUrl": "https://workstreamhq.atlassian.net",
+  "_assigneeIdComment": "Jira accountId of the user who owns this board — overrides symphony.json.assigneeId (which is a Linear UUID). Get it from https://<site>.atlassian.net/rest/api/2/myself",
+  "assigneeId": "YOUR_JIRA_ACCOUNT_ID",
   "code-review-comment": "@codex review",
   "states": {
     "backlog":     "Backlog",
