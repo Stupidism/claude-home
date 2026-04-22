@@ -698,12 +698,15 @@ function reloadNow(reason: string): void {
   log(chalk.yellow(`[${timestamp()}] ⟳ Hot reload: ${reason} — restarting poller`));
 
   const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
-  const cmd = [process.execPath, ...process.argv.slice(1)].map(quote).join(' ');
+  // Preserve execArgv (e.g. --experimental-strip-types) — without it the re-exec
+  // cannot parse .mts. Inherit stdio so the dashboard and interactive commands
+  // (resume, help) keep working after the restart.
+  const cmd = [process.execPath, ...process.execArgv, ...process.argv.slice(1)].map(quote).join(' ');
   const pid = process.pid;
   child_process.spawn(
     'sh',
     ['-c', `while kill -0 ${pid} 2>/dev/null; do sleep 0.2; done; exec ${cmd}`],
-    { detached: true, stdio: 'ignore', cwd: process.cwd() }
+    { detached: true, stdio: 'inherit', cwd: process.cwd() }
   ).unref();
 
   setTimeout(() => process.exit(0), 100);
