@@ -1,0 +1,49 @@
+{
+  "_comment": "Example Jira board config. Symphony needs a distinct Jira status per Symphony state — otherwise the poller fetches the same issue into multiple buckets (e.g. an In Progress issue would also match Rework and Merging). Before using, add the missing statuses (Human Review, In Review, Rework, Merging) to your Jira project workflow, then replace the `transitions` placeholders with the real numeric transition IDs. Get them with: `curl -u email:token https://<site>.atlassian.net/rest/api/2/issue/<KEY>/transitions`.",
+  "teamId": "UP",
+  "name": "UP",
+  "ticketPrefix": "UP",
+  "ticketSystem": "jira",
+  "jiraBaseUrl": "https://workstreamhq.atlassian.net",
+  "_assigneeIdComment": "Jira accountId of the user who owns this board — overrides symphony.json.assigneeId (which is a Linear UUID). Get it from https://<site>.atlassian.net/rest/api/2/myself",
+  "assigneeId": "YOUR_JIRA_ACCOUNT_ID",
+  "code-review-comment": "@codex review",
+  "states": {
+    "backlog":     "Backlog",
+    "todo":        "To Do",
+    "inProgress":  "In Progress",
+    "humanReview": "Human Review",
+    "inReview":    "In Review",
+    "rework":      "Rework",
+    "merging":     "Merging",
+    "done":        "Done"
+  },
+  "transitions": {
+    "backlog":     "YOUR_TRANSITION_ID_BACKLOG",
+    "todo":        "YOUR_TRANSITION_ID_TODO",
+    "inProgress":  "YOUR_TRANSITION_ID_IN_PROGRESS",
+    "humanReview": "YOUR_TRANSITION_ID_HUMAN_REVIEW",
+    "inReview":    "YOUR_TRANSITION_ID_IN_REVIEW",
+    "rework":      "YOUR_TRANSITION_ID_REWORK",
+    "merging":     "YOUR_TRANSITION_ID_MERGING",
+    "done":        "YOUR_TRANSITION_ID_DONE"
+  },
+  "defaultRepo": "workstream-mono",
+  "repos": [
+    {
+      "name": "workstream-mono",
+      "description": "NX monorepo containing all frontend MFE sub-apps and corresponding BFFs.",
+      "path": "~/Documents/workstream-mono",
+      "worktreesDir": "~/Documents/workstream-mono-worktrees",
+      "defaultBranch": "master",
+      "github": "your-org/workstream-mono",
+      "isMono": true,
+      "setup": {
+        "symlinkNodeModules": true,
+        "installCommand": "CI=true pnpm install --frozen-lockfile --quiet",
+        "installCheck": "pnpm-lock.yaml"
+      }
+    }
+  ],
+  "projects": []
+}

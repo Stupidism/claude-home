@@ -1,10 +1,10 @@
 # Symphony
 
-Autonomous agent system that polls Linear tickets and processes them with Claude Code in isolated git worktrees.
+Autonomous agent system that polls Linear or Jira tickets and processes them with Claude Code in isolated git worktrees.
 
 ## How it works
 
-1. **Poller** (`scripts/poll-linear.mts`) polls all configured Linear boards every 30s
+1. **Poller** (`scripts/poll-tickets.mts`) polls all configured boards every 30s
 2. When a ticket moves to **Todo**, the poller claims it (→ In Progress) and spawns an agent
 3. **Runner** (`scripts/run-ticket.sh`) creates a git worktree, sets up the environment, and launches `claude`
 4. The agent reads `~/.claude/WORKFLOW.md` and executes the full dev cycle: plan → implement → validate → PR → submit for review
@@ -19,7 +19,8 @@ symphony/
     boards/
       wor.json             — Workstream board (Linear team, state IDs, repos, projects)
   scripts/
-    poll-linear.mts        — Multi-board poller (TypeScript, Node 22+)
+    poll-tickets.mts       — Multi-board poller (TypeScript, Node 22+)
+    poll-linear.mts        — Back-compat shim that imports poll-tickets.mts
     run-ticket.sh          — Project-agnostic agent runner
     pty-wrapper.py         — Spawns claude --remote-control in a PTY (for claude.ai session visibility)
   secrets.env              — gitignored — LINEAR_API_KEY goes here
@@ -69,10 +70,10 @@ curl -s -X POST https://api.linear.app/graphql \
 pnpm symphony
 
 # Or directly
-cd ~/symphony && node --experimental-strip-types scripts/poll-linear.mts
+cd ~/symphony && node --experimental-strip-types scripts/poll-tickets.mts
 
-# Dry run — polls Linear and prints what would be spawned, no agents started
-cd ~/symphony && node --experimental-strip-types scripts/poll-linear.mts --dry-run
+# Dry run — polls each board and prints what would be spawned, no agents started
+cd ~/symphony && node --experimental-strip-types scripts/poll-tickets.mts --dry-run
 ```
 
 Only one poller instance is allowed. If already running, it will print the existing PID and exit.

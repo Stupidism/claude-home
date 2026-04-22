@@ -71,7 +71,7 @@ signal.signal(signal.SIGTERM, forward_signal)
 signal.signal(signal.SIGINT, forward_signal)
 
 # Scan PTY output for the rate-limit banner so the poller can pause the
-# session (see poll-linear.mts RATE_LIMIT_PATTERN). The TUI output is
+# session (see poll-tickets.mts RATE_LIMIT_PATTERN). The TUI output is
 # otherwise discarded — it's visible on claude.ai. On macOS, os.read
 # returns b'' (EOF) instead of raising OSError when the PTY slave closes.
 # Require the full banner (with "resets <time>") terminated by \r or \n

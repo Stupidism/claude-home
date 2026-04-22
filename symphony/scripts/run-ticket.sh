@@ -3,7 +3,7 @@
 # run-ticket.sh — Run Claude Code on a single ticket
 #
 # Project-agnostic: all repo/board configuration is passed via environment
-# variables by the poller (poll-linear.mts), not derived from filesystem position.
+# variables by the poller (poll-tickets.mts), not derived from filesystem position.
 #
 # Required env vars (set by poller):
 #   REPO_PATH        — absolute path to the git repo (~ expanded)
