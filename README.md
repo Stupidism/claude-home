@@ -67,7 +67,7 @@ Copy and fill in the symphony config:
 cp ~/symphony/config-example/symphony.json ~/symphony/config/symphony.json
 # Edit config/symphony.json — set assigneeId to your Linear user UUID
 # Set the remoteControl to true to view the task progress in Claude Code Desktop or Claude Code Web.
-# Remember to enable the --dangerously-allow-all-actions (run `claude chat --dangerously-allow-all-actions`) in the project folder to make the claude can complete the task without any permission issue.
+# Remember to enable the --dangerously-skip-permissions (run `claude --dangerously-skip-permissions`) in the project folder to make the claude can complete the task without any permission issue.
 ```
 
 ### 5. Customize further
