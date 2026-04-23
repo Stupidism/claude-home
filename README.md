@@ -75,7 +75,7 @@ cp ~/symphony/config-example/symphony.json ~/symphony/config/symphony.json
 - **`~/.claude/CLAUDE.md`** — update language preferences and any personal rules
 - **`~/.claude/skills/`** — add, remove, or edit skills to match your workflow
 
-The Workstream-specific board (`symphony/config/boards/wor.json`) is included as a reference implementation. Adapt or delete it as needed. Update the PrimaryRepo of a project or give the repo information in the Linear issue, it will find the correspond repo, otherwise it will use the default repo.
+The Workstream-specific board (`symphony/config/boards/wor.json`) is included as a reference implementation. Adapt or delete it as needed. Update the PrimaryRepo of a project or give the repo information in the Linear issue.
 
 ---
 
