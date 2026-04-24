@@ -21,7 +21,7 @@ Pick the matching MCP tool — names may vary slightly per MCP version; match by
 | List comments on a ticket | `mcp__linear-server__list_comments` |
 | Create a comment (workpad) | `mcp__linear-server__create_comment` |
 | Update a comment (workpad) | `mcp__linear-server__update_comment` |
-| Change ticket state | `mcp__linear-server__update_issue` with `state: "In Progress" \| "Human Review" \| "Merging" \| "Done"` |
+| Change ticket state | `mcp__linear-server__update_issue` with `state: "Backlog" \| "Todo" \| "In Progress" \| "Human Review" \| "In Review" \| "Rework" \| "Merging" \| "Done"` |
 | Create a new ticket (sub-task) | `mcp__linear-server__create_issue` |
 | Link child to parent | `mcp__linear-server__update_issue` with `parentId` |
 
