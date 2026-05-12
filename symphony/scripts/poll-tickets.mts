@@ -43,6 +43,9 @@ interface RepoConfig {
   /** Per-repo AI review trigger comment. Overrides board-level code-review-comment.
    *  Set to empty string "" to disable review for this repo specifically. */
   'code-review-comment'?: string;
+  /** Sentry project slug (lowercase) for tickets created by the Sentry-Linear /
+   *  Sentry-Jira integrations. When unset, the repo name is used. */
+  sentryProject?: string;
   setup: {
     symlinkNodeModules: boolean;
     installCommand: string;
@@ -298,8 +301,35 @@ async function fetchTicketByIdentifier(board: BoardConfig, identifier: string): 
 
 // ── Resolve ticket → repo ─────────────────────────────────────────────────────
 
+/**
+ * Parse the Sentry project slug out of a ticket description.
+ *
+ * The Sentry-Linear and Sentry-Jira integrations both embed a line like:
+ *   ** Sentry Issue: [WORKSTREAM-HR-18B](https://...sentry.io/...)
+ * where `WORKSTREAM-HR` is the (uppercased) Sentry project slug and `18B` is
+ * the per-issue short ID. Returns the lowercase slug, or null when the ticket
+ * doesn't look like a Sentry-sourced one.
+ */
+function parseSentryProjectSlug(description: string | null): string | null {
+  if (!description) return null;
+  const m = description.match(/Sentry Issue:[\s\[*]*([A-Z][A-Z0-9-]*-[A-Z0-9]+)/);
+  if (!m) return null;
+  const parts = m[1]!.split('-');
+  if (parts.length < 2) return null;
+  parts.pop(); // drop the short ID
+  return parts.join('-').toLowerCase();
+}
+
+function resolveSentryRepo(ticket: Issue, board: BoardConfig): RepoConfig | null {
+  const slug = parseSentryProjectSlug(ticket.description);
+  if (!slug) return null;
+  return board.repos.find((r) => (r.sentryProject ?? r.name).toLowerCase() === slug) ?? null;
+}
+
 function resolveRepo(ticket: Issue, board: BoardConfig): RepoConfig {
   const repoMap = new Map<string, RepoConfig>(board.repos.map((r) => [r.name, r]));
+  const sentryRepo = resolveSentryRepo(ticket, board);
+  if (sentryRepo) return sentryRepo;
   if (ticket.project) {
     const resolved = projectMap.get(ticket.project.id);
     if (resolved) return resolved.primaryRepo;
@@ -308,6 +338,20 @@ function resolveRepo(ticket: Issue, board: BoardConfig): RepoConfig {
 }
 
 function resolveProjectPath(ticket: Issue, board: BoardConfig): string {
+  const sentryRepo = resolveSentryRepo(ticket, board);
+  if (sentryRepo) {
+    // When the ticket also belongs to a project that itemizes per-repo paths,
+    // prefer that path (e.g. monorepo sub-app paths). Otherwise fall back to
+    // the repo root.
+    if (ticket.project) {
+      const resolved = projectMap.get(ticket.project.id);
+      const repoEntry = resolved?.project.repos.find((r) => r.name === sentryRepo.name);
+      if (repoEntry?.path) {
+        return repoEntry.path.replace(/^~/, process.env['HOME'] ?? '~');
+      }
+    }
+    return '';
+  }
   if (ticket.project) {
     const resolved = projectMap.get(ticket.project.id);
     if (resolved?.project.repos[0]?.path) {
