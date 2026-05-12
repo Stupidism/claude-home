@@ -488,6 +488,21 @@ function areAllPRsMerged(issue: Issue, board: BoardConfig): boolean {
 }
 
 /**
+ * Check whether a specific PR URL points to a merged PR. Used as a fallback when
+ * the ticket's workpad references a pre-existing PR whose branch does not match
+ * the ticket's synthesized branch name (e.g. Symphony agent recognized the issue
+ * was already fixed by an unrelated PR).
+ */
+function isPRUrlMerged(prUrl: string): boolean {
+  const result = child_process.spawnSync(
+    'gh', ['pr', 'view', prUrl, '--json', 'state', '-q', '.state'],
+    { encoding: 'utf8' }
+  );
+  if (result.status !== 0) return false;
+  return result.stdout.trim() === 'MERGED';
+}
+
+/**
  * Remove the local worktree for a ticket (best-effort).
  */
 function removeWorktree(issue: Issue, board: BoardConfig): void {
@@ -1360,6 +1375,16 @@ async function poll(): Promise<void> {
       try {
         merged = areAllPRsMerged(issue, board);
       } catch { /* best-effort */ }
+
+      // Fallback: the agent may have recorded a pre-existing PR in the workpad
+      // whose branch does not match the synthesized branch name. Honor that PR
+      // if it is merged.
+      if (!merged) {
+        try {
+          const { prUrl } = await checkHumanReviewApproval(issue, board);
+          if (prUrl) merged = isPRUrlMerged(prUrl);
+        } catch { /* best-effort */ }
+      }
 
       if (merged) {
         log(chalk.green(`[${timestamp()}] ✓ PR merged in Human Review for ${chalk.bold(issue.identifier)} — finalizing`));
