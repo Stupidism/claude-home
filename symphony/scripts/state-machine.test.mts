@@ -75,7 +75,8 @@ function makeDeps(overrides: Partial<Deps<BoardRef>> = {}): { deps: Deps<BoardRe
     resetReworkTicket: recordAsync('resetReworkTicket', undefined),
     removeWorktree: record('removeWorktree'),
     areAllPRsMerged: () => false,
-    checkHumanReviewApproval: async () => ({ alreadyHandled: false, aiReviewed: false, approved: false, prUrl: null }),
+    isPRUrlMerged: () => false,
+    checkHumanReviewApproval: async () => ({ alreadyHandled: false, aiReviewed: false, approved: false, prUrl: null, lockedPrUrl: null }),
     postComment: recordAsync('postComment', undefined),
     spawnAIReview: record('spawnAIReview'),
     spawnNotifyReview: async () => null,
@@ -159,6 +160,54 @@ for (const board of boards) {
     assert.deepEqual(fnNames(calls), ['removeWorktree', 'moveToDone']);
   });
 
+  test(`[${board.name}] humanReview when Symphony-locked PR URL is merged on an unrelated branch → finalizes via isPRUrlMerged fallback`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 116, 'humanReview', board);
+    const { deps, calls } = makeDeps({
+      areAllPRsMerged: () => false,
+      isPRUrlMerged: (url) => url === 'https://github.com/x/y/pull/999',
+      checkHumanReviewApproval: async () => ({
+        alreadyHandled: false,
+        aiReviewed: true,
+        approved: false,
+        prUrl: 'https://github.com/x/y/pull/999',
+        lockedPrUrl: 'https://github.com/x/y/pull/999',
+      }),
+    });
+    const effect = await processTicket('humanReview', ticket, board, deps);
+    assert.deepEqual(effect, { kind: 'finalizeMergedDuringReview' });
+    assert.deepEqual(fnNames(calls), ['removeWorktree', 'moveToDone']);
+  });
+
+  test(`[${board.name}] humanReview with untrusted PR URL (no Symphony lock) → does NOT finalize via fallback`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 117, 'humanReview', board);
+    const isPRUrlMergedCalls: string[] = [];
+    const { deps } = makeDeps({
+      areAllPRsMerged: () => false,
+      isPRUrlMerged: (url) => { isPRUrlMergedCalls.push(url); return true; },
+      checkHumanReviewApproval: async () => ({
+        alreadyHandled: false,
+        aiReviewed: false,
+        approved: false,
+        prUrl: 'https://github.com/x/y/pull/777',
+        lockedPrUrl: null,
+      }),
+    });
+    const effect = await processTicket('humanReview', ticket, board, deps);
+    assert.notDeepEqual(effect, { kind: 'finalizeMergedDuringReview' });
+    assert.deepEqual(isPRUrlMergedCalls, [], 'isPRUrlMerged must not be called when lockedPrUrl is null');
+  });
+
+  test(`[${board.name}] humanReview fast-path finalizes even when comment fetch throws`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 118, 'humanReview', board);
+    const { deps, calls } = makeDeps({
+      areAllPRsMerged: () => true,
+      checkHumanReviewApproval: async () => { throw new Error('comment API down'); },
+    });
+    const effect = await processTicket('humanReview', ticket, board, deps);
+    assert.deepEqual(effect, { kind: 'finalizeMergedDuringReview' });
+    assert.deepEqual(fnNames(calls), ['removeWorktree', 'moveToDone']);
+  });
+
   test(`[${board.name}] humanReview with approval → posts lock + moves to In Review`, async () => {
     const ticket = stubTicket(board.ticketPrefix, 107, 'humanReview', board);
     const { deps, calls } = makeDeps({
@@ -167,6 +216,7 @@ for (const board of boards) {
         aiReviewed: true,
         approved: true,
         prUrl: 'https://github.com/x/y/pull/1',
+        lockedPrUrl: 'https://github.com/x/y/pull/1',
       }),
     });
     const effect = await processTicket('humanReview', ticket, board, deps);
@@ -183,6 +233,7 @@ for (const board of boards) {
         aiReviewed: false,
         approved: false,
         prUrl: 'https://github.com/x/y/pull/2',
+        lockedPrUrl: null,
       }),
     });
     const effect = await processTicket('humanReview', ticket, board, deps);
@@ -265,6 +316,7 @@ for (const board of boards) {
           aiReviewed: true,
           approved: true,
           prUrl: 'https://github.com/x/y/pull/999',
+          lockedPrUrl: 'https://github.com/x/y/pull/999',
         }),
       });
       calls.push(await processTicket('humanReview', ticket, board, deps));

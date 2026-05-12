@@ -61,11 +61,26 @@ export interface Deps<Board extends BoardRef = BoardRef> {
 
   // GitHub / review checks
   areAllPRsMerged(ticket: Issue, board: Board): boolean;
+  /**
+   * Resolve a specific PR URL and return whether GitHub reports it MERGED.
+   * Used as a fallback when the ticket references a pre-existing PR whose
+   * head branch does not match the synthesized branch name (e.g. an agent
+   * recognized the issue was already fixed by an unrelated PR).
+   */
+  isPRUrlMerged(prUrl: string): boolean;
   checkHumanReviewApproval(ticket: Issue, board: Board): Promise<{
     alreadyHandled: boolean;
     aiReviewed: boolean;
     approved: boolean;
+    /** First PR URL found in any comment — used for AI review + notify flows. */
     prUrl: string | null;
+    /**
+     * PR URL extracted only from Symphony-authored lock comments
+     * (`[symphony] aiReviewRequested:` / `[symphony] developerApproved:`).
+     * Trusted reference for finalize-as-merged decisions so an unrelated PR
+     * URL pasted in human discussion can't trigger a premature Done move.
+     */
+    lockedPrUrl: string | null;
   }>;
   postComment(board: Board, issueId: string, body: string): Promise<void>;
   spawnAIReview(ticket: Issue, board: Board, prUrl: string): void;
@@ -223,6 +238,31 @@ async function handleHumanReview<B extends BoardRef>({ ticket, board, deps }: Di
   // Fast path: PR was merged directly on GitHub, skipping Merging.
   let merged = false;
   try { merged = deps.areAllPRsMerged(ticket, board); } catch { /* best-effort */ }
+
+  // Comment-derived state is best-effort: if the comment API trips, fall back
+  // to safe defaults rather than throwing past the fast-path finalize block.
+  let approvalInfo: {
+    alreadyHandled: boolean;
+    aiReviewed: boolean;
+    approved: boolean;
+    prUrl: string | null;
+    lockedPrUrl: string | null;
+  } = { alreadyHandled: false, aiReviewed: false, approved: false, prUrl: null, lockedPrUrl: null };
+  try {
+    approvalInfo = await deps.checkHumanReviewApproval(ticket, board);
+  } catch (err) {
+    deps.log(`checkHumanReviewApproval failed for ${ticket.identifier}: ${err}`);
+  }
+  const { alreadyHandled, aiReviewed, approved, prUrl, lockedPrUrl } = approvalInfo;
+
+  // Fallback: a Symphony-authored lock comment references a PR whose head
+  // branch doesn't match the synthesized branch name (e.g. agent recognized
+  // an already-merged fix on an unrelated branch). Only trust PR URLs the
+  // poller itself recorded — never a URL pasted in human discussion.
+  if (!merged && lockedPrUrl) {
+    try { merged = deps.isPRUrlMerged(lockedPrUrl); } catch { /* best-effort */ }
+  }
+
   if (merged) {
     deps.log(`PR merged in Human Review for ${ticket.identifier} — finalizing`);
     try {
@@ -233,8 +273,6 @@ async function handleHumanReview<B extends BoardRef>({ ticket, board, deps }: Di
     }
     return { kind: 'finalizeMergedDuringReview' };
   }
-
-  const { alreadyHandled, aiReviewed, approved, prUrl } = await deps.checkHumanReviewApproval(ticket, board);
 
   let triggeredAI = false;
   if (!aiReviewed && prUrl) {
