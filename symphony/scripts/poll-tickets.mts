@@ -503,9 +503,13 @@ function areAllPRsMerged(issue: Issue, board: BoardConfig): boolean {
 function isPRUrlMerged(prUrl: string): boolean {
   const result = child_process.spawnSync(
     'gh', ['pr', 'view', prUrl, '--json', 'state', '-q', '.state'],
-    { encoding: 'utf8' }
+    {
+      encoding: 'utf8',
+      timeout: 10_000,
+      env: { ...process.env, GH_PROMPT_DISABLED: '1', GIT_TERMINAL_PROMPT: '0' },
+    }
   );
-  if (result.status !== 0) return false;
+  if (result.error || result.status !== 0) return false;
   return result.stdout.trim() === 'MERGED';
 }
 
@@ -1132,14 +1136,21 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
         // the instant it exits.
         const guardedAgent = agent;
         (async () => {
+          const owned = new Set([guardedAgent.board.states.todo, guardedAgent.board.states.inProgress, guardedAgent.board.states.rework]);
+          let stateId: string | null;
           try {
-            const stateId = await fetchTicketStateId(guardedAgent.board, ticket.identifier);
-            const owned = new Set([guardedAgent.board.states.todo, guardedAgent.board.states.inProgress, guardedAgent.board.states.rework]);
-            if (stateId && !owned.has(stateId)) {
-              log(chalk.dim(`[symphony] ${ticket.identifier} already in a non-owned state — skipping auto Human Review move`));
-              return;
-            }
-          } catch { /* fall through to default behavior */ }
+            stateId = await fetchTicketStateId(guardedAgent.board, ticket.identifier);
+          } catch (err) {
+            // Treat resolver failures as "don't know" — skip the force-move
+            // rather than defaulting to Human Review, which would re-introduce
+            // the original bug on transient adapter/API errors.
+            log(chalk.yellow(`[symphony] ${ticket.identifier} state resolve failed (${err}) — skipping auto Human Review move`));
+            return;
+          }
+          if (!stateId || !owned.has(stateId)) {
+            log(chalk.dim(`[symphony] ${ticket.identifier} not in an agent-owned state — skipping auto Human Review move`));
+            return;
+          }
           moveToHumanReview(guardedAgent.board, guardedAgent.issueId, ticket.identifier).catch(() => {});
         })();
       }
@@ -1159,7 +1170,14 @@ async function checkHumanReviewApproval(issue: Issue, board: BoardConfig) {
   const prPattern = /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+/;
   const approved = bodies.some((b) => approvalPattern.test(b));
   const prUrl = bodies.map((b) => b.match(prPattern)?.[0]).find(Boolean) ?? null;
-  return { alreadyHandled, aiReviewed, approved, prUrl };
+  // PR URL specifically from a Symphony-authored lock comment. Used as a
+  // trusted reference for finalize-as-merged decisions so that an unrelated
+  // PR URL pasted in human discussion can't trigger a premature Done move.
+  const lockedPrUrl = bodies
+    .filter((b) => b.startsWith(AI_REVIEW_LOCK_PREFIX) || b.startsWith(APPROVAL_LOCK_PREFIX))
+    .map((b) => b.match(prPattern)?.[0])
+    .find(Boolean) ?? null;
+  return { alreadyHandled, aiReviewed, approved, prUrl, lockedPrUrl };
 }
 
 async function postComment(board: BoardConfig, issueId: string, body: string): Promise<void> {

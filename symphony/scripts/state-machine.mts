@@ -72,7 +72,15 @@ export interface Deps<Board extends BoardRef = BoardRef> {
     alreadyHandled: boolean;
     aiReviewed: boolean;
     approved: boolean;
+    /** First PR URL found in any comment — used for AI review + notify flows. */
     prUrl: string | null;
+    /**
+     * PR URL extracted only from Symphony-authored lock comments
+     * (`[symphony] aiReviewRequested:` / `[symphony] developerApproved:`).
+     * Trusted reference for finalize-as-merged decisions so an unrelated PR
+     * URL pasted in human discussion can't trigger a premature Done move.
+     */
+    lockedPrUrl: string | null;
   }>;
   postComment(board: Board, issueId: string, body: string): Promise<void>;
   spawnAIReview(ticket: Issue, board: Board, prUrl: string): void;
@@ -231,12 +239,28 @@ async function handleHumanReview<B extends BoardRef>({ ticket, board, deps }: Di
   let merged = false;
   try { merged = deps.areAllPRsMerged(ticket, board); } catch { /* best-effort */ }
 
-  const { alreadyHandled, aiReviewed, approved, prUrl } = await deps.checkHumanReviewApproval(ticket, board);
+  // Comment-derived state is best-effort: if the comment API trips, fall back
+  // to safe defaults rather than throwing past the fast-path finalize block.
+  let approvalInfo: {
+    alreadyHandled: boolean;
+    aiReviewed: boolean;
+    approved: boolean;
+    prUrl: string | null;
+    lockedPrUrl: string | null;
+  } = { alreadyHandled: false, aiReviewed: false, approved: false, prUrl: null, lockedPrUrl: null };
+  try {
+    approvalInfo = await deps.checkHumanReviewApproval(ticket, board);
+  } catch (err) {
+    deps.log(`checkHumanReviewApproval failed for ${ticket.identifier}: ${err}`);
+  }
+  const { alreadyHandled, aiReviewed, approved, prUrl, lockedPrUrl } = approvalInfo;
 
-  // Fallback: the agent may have recorded a pre-existing PR (on an unrelated
-  // branch) in the workpad / aiReviewRequested comment. Honor it if merged.
-  if (!merged && prUrl) {
-    try { merged = deps.isPRUrlMerged(prUrl); } catch { /* best-effort */ }
+  // Fallback: a Symphony-authored lock comment references a PR whose head
+  // branch doesn't match the synthesized branch name (e.g. agent recognized
+  // an already-merged fix on an unrelated branch). Only trust PR URLs the
+  // poller itself recorded — never a URL pasted in human discussion.
+  if (!merged && lockedPrUrl) {
+    try { merged = deps.isPRUrlMerged(lockedPrUrl); } catch { /* best-effort */ }
   }
 
   if (merged) {
