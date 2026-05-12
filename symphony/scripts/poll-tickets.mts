@@ -23,6 +23,14 @@ import Table from 'cli-table3';
 import { linearAdapter } from './ticket-systems/linear.mts';
 import { jiraAdapter } from './ticket-systems/jira.mts';
 import type { Issue, StateKey, TicketSystemAdapter } from './ticket-systems/types.mts';
+import {
+  processTicket,
+  AI_REVIEW_LOCK_PREFIX,
+  APPROVAL_LOCK_PREFIX,
+  MAX_RETRIES as STATE_MACHINE_MAX_RETRIES,
+  type Deps as StateMachineDeps,
+  type SpawnMode,
+} from './state-machine.mts';
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -814,7 +822,7 @@ function setupHotReload(): void {
   process.on('exit', cleanupLock);
 }
 
-const MAX_RETRIES = 3;
+const MAX_RETRIES = STATE_MACHINE_MAX_RETRIES;
 const failureCounts = new Map<string, number>();
 const lastKnownState = new Map<string, string>();
 const RATE_LIMIT_PATTERN = /You've hit your limit|rate.?limit/i;
@@ -875,8 +883,6 @@ function parseRateLimitResetTime(logContent: string): Date | null {
 function isPidAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
-
-type SpawnMode = 'fresh' | 'feedback' | 'continue';
 
 function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'continue', forMerging = false): void {
   if (DRY_RUN) {
@@ -1085,9 +1091,6 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
 }
 
 // ── Human Review helpers ──────────────────────────────────────────────────────
-
-const AI_REVIEW_LOCK_PREFIX = '[symphony] aiReviewRequested:';
-const APPROVAL_LOCK_PREFIX = '[symphony] developerApproved:';
 
 async function checkHumanReviewApproval(issue: Issue, board: BoardConfig) {
   const comments = await getAdapter(board).listComments(board, issue.id);
@@ -1352,92 +1355,48 @@ async function poll(): Promise<void> {
       }
     }
 
-    // Human Review: AI review + approval detection
-    for (const issue of humanReviewTickets.filter((t) => isEligible(t, board))) {
-      // Fast-path: if the PR was already merged (e.g. reviewer merged directly from
-      // GitHub without going through the Merging state), finalize immediately.
-      let merged = false;
-      try {
-        merged = areAllPRsMerged(issue, board);
-      } catch { /* best-effort */ }
+    // All per-state ticket handling lives in state-machine.mts. We just build a
+    // deps object that wraps the poller's I/O + introspection and let
+    // processTicket() decide what side effect to run.
+    const deps: StateMachineDeps<BoardConfig> = {
+      moveToInProgress,
+      moveToHumanReview,
+      moveToInReview,
+      moveToTodo,
+      moveToDone,
+      spawnAgent,
+      resetReworkTicket,
+      removeWorktree,
+      areAllPRsMerged,
+      checkHumanReviewApproval,
+      postComment,
+      spawnAIReview,
+      spawnNotifyReview,
+      isAgentRunning: (id) => runningAgents.has(id),
+      agentSlotsAvailable: () => Math.max(0, MAX_CONCURRENT - runningAgents.size),
+      failureCountFor: (id) => failureCounts.get(id) ?? 0,
+      lastKnownState: (id) => lastKnownState.get(id),
+      isEligible,
+      log,
+    };
 
-      if (merged) {
-        log(chalk.green(`[${timestamp()}] ✓ PR merged in Human Review for ${chalk.bold(issue.identifier)} — finalizing`));
+    const dispatch = async (state: StateKey, tickets: Issue[], throttleMs = 0): Promise<void> => {
+      for (const issue of tickets) {
         try {
-          removeWorktree(issue, board);
-          await moveToDone(board, issue.id, issue.identifier);
+          await processTicket(state, issue, board, deps);
         } catch (err) {
-          log(chalk.red(`[symphony] Failed to finalize merged PR ${issue.identifier}: ${err}`));
+          log(chalk.red(`[symphony] processTicket(${state}) error for ${issue.identifier}: ${err}`));
         }
-        continue;
+        if (throttleMs > 0) await sleep(throttleMs);
       }
+    };
 
-      try {
-        const { alreadyHandled, aiReviewed, approved, prUrl } = await checkHumanReviewApproval(issue, board);
-        if (!aiReviewed && prUrl) {
-          await postComment(board, issue.id, `${AI_REVIEW_LOCK_PREFIX} ${prUrl}`);
-          spawnAIReview(issue, board, prUrl);
-        }
-        if (alreadyHandled) continue;
-        if (approved && prUrl) {
-          await postComment(board, issue.id, `${APPROVAL_LOCK_PREFIX} notifying team…`);
-          await moveToInReview(board, issue.id, issue.identifier);
-          spawnNotifyReview(issue, board, prUrl).then(async (slackLink) => {
-            if (slackLink) await postComment(board, issue.id, `${APPROVAL_LOCK_PREFIX} ${slackLink}`).catch(() => {});
-          });
-        }
-      } catch (err) {
-        log(chalk.red(`[symphony] Error checking ${issue.identifier}: ${err}`));
-      }
-    }
-
-    // Merging
-    for (const issue of mergingTickets.filter((t) => isEligible(t, board))) {
-      if (runningAgents.has(issue.identifier)) continue;
-
-      // If the PR is already merged (e.g. merged manually or Linear wasn't connected),
-      // skip spawning an agent and finalize directly.
-      try {
-        if (areAllPRsMerged(issue, board)) {
-          log(chalk.green(`[${timestamp()}] ✓ PR already merged for ${chalk.bold(issue.identifier)} — finalizing`));
-          removeWorktree(issue, board);
-          await moveToDone(board, issue.id, issue.identifier);
-          continue;
-        }
-      } catch { /* best-effort — fall through to normal agent spawn */ }
-
-      if (runningAgents.size >= MAX_CONCURRENT) break;
-      log(chalk.magenta(`[${timestamp()}] ⬇ Merging:`) + ` ${chalk.bold(issue.identifier)} — ${issue.title}`);
-      spawnAgent(issue, board, 'continue', true);
-      await sleep(3000);
-    }
-
-    // Rework = reviewer requested a full reset.
-    // Poller handles cleanup (close PR, delete workpad, remove worktree) then
-    // moves ticket back to Todo. Next poll cycle picks it up as a fresh Todo.
-    for (const issue of reworkTickets.filter((t) => isEligible(t, board))) {
-      if (runningAgents.has(issue.identifier)) continue; // wait for running agent to exit first
-      try {
-        await resetReworkTicket(issue, board);
-      } catch (err) {
-        log(chalk.red(`[symphony] Error resetting rework ticket ${issue.identifier}: ${err}`));
-      }
-      await sleep(2000);
-    }
-
-    // Resume stale In Progress
-    const stale = inProgressTickets.filter(
-      (t) => isEligible(t, board) && !runningAgents.has(t.identifier) && (failureCounts.get(t.identifier) ?? 0) < MAX_RETRIES
-    );
-    for (const issue of stale) {
-      if (runningAgents.size >= MAX_CONCURRENT) break;
-      const prev = lastKnownState.get(issue.identifier);
-      const fromReview = prev === 'Human Review' || prev === 'In Review' || prev === 'Rework';
-      const mode: SpawnMode = fromReview ? 'feedback' : 'continue';
-      log(chalk.yellow(`[${timestamp()}] ↺ Resuming ${fromReview ? '(feedback)' : '(continue)'}:`) + ` ${chalk.bold(issue.identifier)} — ${issue.title}`);
-      spawnAgent(issue, board, mode);
-      await sleep(3000);
-    }
+    // Order matters: Human Review and Merging finalize Done tickets which frees
+    // up agent slots; Rework cleans up before classify-and-spawn for new Todos.
+    await dispatch('humanReview', humanReviewTickets.filter((t) => isEligible(t, board)));
+    await dispatch('merging', mergingTickets.filter((t) => isEligible(t, board)), 3000);
+    await dispatch('rework', reworkTickets.filter((t) => isEligible(t, board)), 2000);
+    await dispatch('inProgress', inProgressTickets.filter((t) => isEligible(t, board)), 3000);
 
     // Classify todo tickets
     for (const t of todoTickets) {
@@ -1464,13 +1423,25 @@ async function poll(): Promise<void> {
 
   if (runningAgents.size >= MAX_CONCURRENT) return;
 
-  // Spawn new agents for todo tickets
+  // Spawn new agents for todo tickets — delegate per-ticket to processTicket('todo').
+  // Done in a second pass after Human Review / Merging / etc. so freed slots are
+  // visible. Tickets that came in via inProgress polling already had their own
+  // handler run above; here we just want fresh Todos.
   for (const { ticket, board } of allEligible) {
+    if (lastKnownState.get(ticket.identifier) !== 'Todo') continue; // skip inProgress entries
     if (runningAgents.has(ticket.identifier)) continue;
     if (runningAgents.size >= MAX_CONCURRENT) break;
-    log(`[${timestamp()}] Claiming ${chalk.bold(ticket.identifier)} [${ticket.project?.name ?? 'no project'}] — ${ticket.title}`);
-    await moveToInProgress(board, ticket.id, ticket.identifier);
-    spawnAgent(ticket, board, 'fresh');
+    const deps: StateMachineDeps<BoardConfig> = {
+      moveToInProgress, moveToHumanReview, moveToInReview, moveToTodo, moveToDone,
+      spawnAgent, resetReworkTicket, removeWorktree, areAllPRsMerged,
+      checkHumanReviewApproval, postComment, spawnAIReview, spawnNotifyReview,
+      isAgentRunning: (id) => runningAgents.has(id),
+      agentSlotsAvailable: () => Math.max(0, MAX_CONCURRENT - runningAgents.size),
+      failureCountFor: (id) => failureCounts.get(id) ?? 0,
+      lastKnownState: (id) => lastKnownState.get(id),
+      isEligible, log,
+    };
+    await processTicket('todo', ticket, board, deps);
     renderDashboard();
     await sleep(3000);
   }
