@@ -1092,7 +1092,22 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
       if (agent?.spawnedForMerging && code === 0) {
         moveToDone(agent.board, agent.issueId, ticket.identifier).catch(() => {});
       } else if (agent) {
-        moveToHumanReview(agent.board, agent.issueId, ticket.identifier).catch(() => {});
+        // Respect terminal/explicit states the agent (or a human) set during the
+        // session — only auto-move to Human Review when the ticket is still in
+        // a state the agent owns. Without this guard, an agent that finalizes
+        // to Done (e.g. "already fixed by an unrelated merged PR") gets dragged
+        // back to Human Review the instant it exits.
+        (async () => {
+          try {
+            const stateId = await fetchTicketStateId(agent.board, ticket.identifier);
+            const owned = new Set([agent.board.states.todo, agent.board.states.inProgress, agent.board.states.rework]);
+            if (stateId && !owned.has(stateId)) {
+              log(chalk.dim(`[symphony] ${ticket.identifier} already in a non-owned state — skipping auto Human Review move`));
+              return;
+            }
+          } catch { /* fall through to default behavior */ }
+          moveToHumanReview(agent.board, agent.issueId, ticket.identifier).catch(() => {});
+        })();
       }
     }
     renderDashboard();
