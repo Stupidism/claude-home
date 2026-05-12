@@ -1198,70 +1198,21 @@ function spawnAIReview(issue: Issue, board: BoardConfig, prUrl: string): void {
   if (!codeReviewComment) return; // no review configured for this repo/board — skip
   const repoPath = repoConfig.path.replace(/^~/, process.env['HOME'] ?? '~');
 
-  // Write the review-trigger comment to a temp file to avoid any shell escaping issues.
-  const tmpCommentFile = `/tmp/symphony-review-comment-${prNumber}.txt`;
-  const prompt = `You are monitoring an automated code review request for a GitHub PR.
-
-## PR
-${prUrl} (PR #${prNumber})
-
-## Instructions
-
-1. Write the review-trigger comment to a temp file (avoids escaping issues):
-   \`\`\`bash
-   cat > ${tmpCommentFile} << 'SYMPHONY_EOF'
-${codeReviewComment}
-SYMPHONY_EOF
-   \`\`\`
-
-2. Capture the current review count before posting, so you can identify only new reviews later:
-   \`\`\`bash
-   BEFORE_COUNT=$(gh pr view ${prNumber} --json reviews --jq '.reviews | length')
-   \`\`\`
-
-3. Post the comment to trigger the board's configured AI reviewer:
-   \`\`\`bash
-   gh pr comment ${prNumber} --body-file ${tmpCommentFile}
-   \`\`\`
-
-4. Poll the PR reviews every 30 seconds, for up to 15 minutes, until the review bot responds.
-   Only inspect reviews that were added after the trigger (index >= BEFORE_COUNT):
-   \`\`\`bash
-   gh pr view ${prNumber} --json reviews --jq ".reviews[$BEFORE_COUNT:] | map({login: .author.login, state: .state})"
-   \`\`\`
-   Repeat until you see a review with state APPROVED or CHANGES_REQUESTED, or 15 minutes elapse.
-
-5. Based on the result:
-   - If any new review shows CHANGES_REQUESTED → print \`ACTIONABLE:YES\`
-   - If any new review shows APPROVED, or 15 minutes elapse with no new review → print \`ACTIONABLE:NO\`
-
-Do not make code changes, commits, or any other actions beyond the above steps.
-
-Print exactly one of these as your LAST line of output:
-- \`ACTIONABLE:YES\` — the bot requested changes
-- \`ACTIONABLE:NO\` — the bot approved or the wait timed out`;
-
+  // Fire-and-forget the trigger comment. The AI reviewer leaves its feedback as
+  // PR comments/reviews; the agent picks those up via pr-feedback-sweep on its
+  // next activation, so the poller no longer needs to drive completion handling.
   const child = child_process.spawn(
-    'claude',
-    ['--dangerously-skip-permissions', '--print', prompt],
+    'gh',
+    ['pr', 'comment', prNumber, '--body', codeReviewComment],
     { cwd: repoPath, stdio: ['ignore', 'pipe', 'pipe'], detached: false }
   );
-  let output = '';
-  child.stdout?.on('data', (d: Buffer) => (output += d.toString()));
-  child.stderr?.on('data', (d: Buffer) => (output += d.toString()));
-
   child.on('exit', (code) => {
-    if (code === 0) {
-      const hasActionable = output.trim().endsWith('ACTIONABLE:YES');
-      postComment(board, issue.id, hasActionable
-        ? `[symphony] aiReviewComplete: changes requested — see PR comments at ${prUrl}`
-        : `[symphony] aiReviewComplete: no changes needed — ${prUrl}`
-      ).catch(() => {});
-      if (hasActionable) moveToInProgress(board, issue.id, issue.identifier).catch(() => {});
+    if (code !== 0) {
+      log(chalk.yellow(`[${timestamp()}] ⚠ AI review trigger failed for ${issue.identifier} (PR #${prNumber}, exit ${code})`));
     }
   });
 
-  log(chalk.blue(`[${timestamp()}] 🔍 AI review started for ${issue.identifier} (PR #${prNumber})`));
+  log(chalk.blue(`[${timestamp()}] 🔍 AI review triggered for ${issue.identifier} (PR #${prNumber})`));
 }
 
 // ── Worktree cleanup ──────────────────────────────────────────────────────────
