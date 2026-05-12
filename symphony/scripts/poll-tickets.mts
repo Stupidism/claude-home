@@ -15,11 +15,18 @@
  */
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import * as child_process from 'node:child_process';
 import * as readline from 'node:readline';
 import chalk from 'chalk';
 import Table from 'cli-table3';
+import {
+  buildDashboardHtml,
+  readSessionId,
+  type HtmlRow,
+  type HtmlStatusKind,
+} from './html-dashboard.mts';
 import { linearAdapter } from './ticket-systems/linear.mts';
 import { jiraAdapter } from './ticket-systems/jira.mts';
 import type { Issue, StateKey, TicketSystemAdapter } from './ticket-systems/types.mts';
@@ -38,6 +45,8 @@ const SYMPHONY_ROOT = path.resolve(import.meta.dirname, '..');
 const CONFIG_DIR = path.join(SYMPHONY_ROOT, 'config');
 
 const DRY_RUN = process.argv.includes('--dry-run');
+const HTML_MODE = process.argv.includes('--html');
+const HTML_DASHBOARD_FILE = path.join(os.tmpdir(), 'symphony-dashboard.html');
 
 // ── Config types ──────────────────────────────────────────────────────────────
 
@@ -627,6 +636,81 @@ function renderDashboard(): void {
   if (lastDashboardLines > 0) process.stdout.write(`\x1b[${lastDashboardLines}A\x1b[0J`);
   process.stdout.write(dashboard + '\n');
   lastDashboardLines = lines.length;
+  if (HTML_MODE) writeHtmlDashboard(ts);
+}
+
+/**
+ * Build the HTML row list from the same in-memory state buildDashboard uses,
+ * then render the document to HTML_DASHBOARD_FILE. Best-effort: write errors
+ * are logged but never crash the poller.
+ */
+function writeHtmlDashboard(updatedAt: string): void {
+  const seen = new Set<string>();
+  const rawRows: DashboardRow[] = [];
+  for (const r of lastSnapshot) {
+    if (seen.has(r.ticket.identifier)) continue;
+    seen.add(r.ticket.identifier);
+    rawRows.push(r);
+  }
+  for (const [id, agent] of runningAgents) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    rawRows.push({ ticket: agent.ticket, board: agent.board, state: agent.spawnedForMerging ? 'merging' : 'inProgress' });
+  }
+
+  const htmlRows: HtmlRow[] = rawRows.map((row) => {
+    const agent = runningAgents.get(row.ticket.identifier);
+    // `.claude-session-id` only maps to a claude.ai/agents/<id> URL when the
+    // agent was spawned with `--remote-control`. Without it the file still
+    // exists (run-ticket.sh always writes one) but the session was never
+    // registered, so the link would 404. Suppress the column in that case.
+    const sessionId = agent && REMOTE_CONTROL ? readSessionId(agent.worktreePath) : null;
+    const repo = resolveRepo(row.ticket, row.board);
+    let statusKind: HtmlStatusKind;
+    let statusLabel: string;
+    let runtimeLabel: string | null = null;
+    if (agent) {
+      statusKind = agent.spawnedForMerging ? 'merging' : 'running';
+      statusLabel = agent.spawnedForMerging ? 'Merging' : 'Running';
+      runtimeLabel = formatDuration(Date.now() - agent.spawnedAt);
+    } else {
+      statusKind = row.state;
+      statusLabel = ({
+        merging: 'Merging',
+        inProgress: 'In Progress',
+        humanReview: 'Human Review',
+        rework: 'Rework',
+        todo: 'Todo',
+        blocked: 'Blocked',
+      } as const)[row.state];
+    }
+    return {
+      identifier: row.ticket.identifier,
+      ticketUrl: row.ticket.url,
+      statusLabel,
+      statusKind,
+      project: row.ticket.project?.name ?? '—',
+      repo: repo?.name ?? '—',
+      summary: row.ticket.title,
+      sessionId,
+      runtimeLabel,
+    };
+  });
+
+  const html = buildDashboardHtml({
+    rows: htmlRows,
+    updatedAt,
+    runningAgents: runningAgents.size,
+    maxConcurrent: MAX_CONCURRENT,
+    boards: boards.map((b) => b.ticketPrefix),
+    pollIntervalSeconds: Math.round(POLL_INTERVAL_MS / 1000),
+  });
+
+  try {
+    fs.writeFileSync(HTML_DASHBOARD_FILE, html);
+  } catch (err) {
+    console.error(chalk.yellow(`[symphony] Failed to write HTML dashboard: ${(err as Error).message}`));
+  }
 }
 
 function log(msg: string): void {
@@ -1510,6 +1594,10 @@ console.log(`  ${chalk.dim('Assignee:')}    ${ASSIGNEE_ID || 'any'}`);
 console.log(`  ${chalk.dim('Max agents:')}  ${MAX_CONCURRENT}`);
 console.log(`  ${chalk.dim('Poll:')}        every ${POLL_INTERVAL_MS / 1000}s`);
 if (DRY_RUN) console.log(chalk.yellow('  [DRY RUN MODE — no agents will be spawned]'));
+if (HTML_MODE) {
+  console.log(`  ${chalk.dim('HTML out:')}    ${HTML_DASHBOARD_FILE}`);
+  writeHtmlDashboard(new Date().toTimeString().slice(0, 8));
+}
 console.log('');
 console.log(
   chalk.dim(
