@@ -1382,10 +1382,21 @@ async function poll(): Promise<void> {
 
     const dispatch = async (state: StateKey, tickets: Issue[], throttleMs = 0): Promise<void> => {
       for (const issue of tickets) {
+        let effect;
         try {
-          await processTicket(state, issue, board, deps);
+          effect = await processTicket(state, issue, board, deps);
         } catch (err) {
           log(chalk.red(`[symphony] processTicket(${state}) error for ${issue.identifier}: ${err}`));
+          continue;
+        }
+        // Stop the whole batch the moment slots run out — every subsequent
+        // ticket in this state would just no-op for the same reason. Don't
+        // sleep for no-ops either; throttling is only meaningful when we
+        // actually spawned / reset / finalized work (mirrors the pre-refactor
+        // `continue` / `break` semantics).
+        if (effect.kind === 'noop') {
+          if (effect.reason === 'no agent slots') break;
+          continue;
         }
         if (throttleMs > 0) await sleep(throttleMs);
       }
