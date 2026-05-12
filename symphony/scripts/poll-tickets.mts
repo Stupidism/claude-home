@@ -531,61 +531,90 @@ interface AgentEntry {
 
 const runningAgents = new Map<string, AgentEntry>();
 let isShuttingDown = false;
-let lastEligibleAll: { ticket: Issue; board: BoardConfig }[] = [];
-let lastBlockedAll: { ticket: Issue; board: BoardConfig }[] = [];
+type DashboardState = 'todo' | 'blocked' | 'inProgress' | 'humanReview' | 'merging' | 'rework';
+interface DashboardRow { ticket: Issue; board: BoardConfig; state: DashboardState }
+let lastSnapshot: DashboardRow[] = [];
+
+const STATE_ORDER: DashboardState[] = ['merging', 'inProgress', 'humanReview', 'rework', 'todo', 'blocked'];
+
+function formatDuration(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  return `${h}h${m % 60}m`;
+}
+
+function renderStatus(row: DashboardRow): string {
+  const agent = runningAgents.get(row.ticket.identifier);
+  if (agent) {
+    const dur = formatDuration(Date.now() - agent.spawnedAt);
+    const label = agent.spawnedForMerging ? 'Merging' : 'Running';
+    const color = agent.spawnedForMerging ? chalk.magenta : chalk.cyan;
+    return `${color(label)} ${chalk.dim(dur)}`;
+  }
+  switch (row.state) {
+    case 'merging': return chalk.magenta('Merging');
+    case 'inProgress': return chalk.cyan('In Progress');
+    case 'humanReview': return chalk.magenta('Human Review');
+    case 'rework': return chalk.red('Rework');
+    case 'todo': return chalk.yellow('Todo');
+    case 'blocked': return chalk.dim('Blocked');
+  }
+}
 
 function buildDashboard(updatedAt: string): string {
-  const stats = new Map<string, { todo: string[]; running: string[]; board: string }>();
-
-  const getOrCreate = (name: string, boardName: string) => {
-    if (!stats.has(name)) stats.set(name, { todo: [], running: [], board: boardName });
-    return stats.get(name)!;
-  };
-
-  for (const { ticket, board } of lastEligibleAll) {
-    const name = ticket.project?.name ?? '(no project)';
-    const row = getOrCreate(name, board.name);
-    if (runningAgents.has(ticket.identifier)) {
-      row.running.push(ticket.identifier);
-    } else {
-      row.todo.push(ticket.identifier);
-    }
+  const seen = new Set<string>();
+  const rows: DashboardRow[] = [];
+  for (const r of lastSnapshot) {
+    if (seen.has(r.ticket.identifier)) continue;
+    seen.add(r.ticket.identifier);
+    rows.push(r);
+  }
+  for (const [id, agent] of runningAgents) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    rows.push({ ticket: agent.ticket, board: agent.board, state: agent.spawnedForMerging ? 'merging' : 'inProgress' });
   }
 
-  for (const [id, { project, boardName }] of runningAgents) {
-    const row = getOrCreate(project, boardName);
-    if (!row.running.includes(id)) row.running.push(id);
-  }
-
-  const table = new Table({
-    head: [chalk.bold.white('Project'), chalk.bold.dim('Board'), chalk.bold.yellow('Todo'), chalk.bold.cyan('Running')],
-    colWidths: [26, 14, 20, 20],
-    style: { head: [], border: ['gray'] },
+  rows.sort((a, b) => {
+    const ra = runningAgents.has(a.ticket.identifier) ? 0 : 1;
+    const rb = runningAgents.has(b.ticket.identifier) ? 0 : 1;
+    if (ra !== rb) return ra - rb;
+    const sa = STATE_ORDER.indexOf(a.state);
+    const sb = STATE_ORDER.indexOf(b.state);
+    if (sa !== sb) return sa - sb;
+    return a.ticket.identifier.localeCompare(b.ticket.identifier);
   });
 
-  for (const [project, { todo, running, board }] of stats) {
+  const table = new Table({
+    head: [
+      chalk.bold.white('Ticket'),
+      chalk.bold.white('Status'),
+      chalk.bold.white('Project'),
+      chalk.bold.white('Repo'),
+      chalk.bold.white('Summary'),
+    ],
+    colWidths: [10, 18, 22, 18, 50],
+    style: { head: [], border: ['gray'] },
+    wordWrap: true,
+  });
+
+  for (const row of rows) {
+    const repo = resolveRepo(row.ticket, row.board);
     table.push([
-      project,
-      chalk.dim(board),
-      todo.length ? chalk.yellow(`${todo.length}  `) + chalk.dim(`(${todo.join(', ')})`) : chalk.dim('—'),
-      running.length ? chalk.cyan(`${running.length}  `) + chalk.dim(`(${running.join(', ')})`) : chalk.dim('—'),
+      chalk.bold(row.ticket.identifier),
+      renderStatus(row),
+      row.ticket.project?.name ?? chalk.dim('—'),
+      repo?.name ?? chalk.dim('—'),
+      row.ticket.title,
     ]);
   }
 
-  if (!stats.size) table.push([chalk.dim('(none)'), chalk.dim('—'), chalk.dim('—'), chalk.dim('—')]);
+  if (!rows.length) table.push([chalk.dim('(none)'), chalk.dim('—'), chalk.dim('—'), chalk.dim('—'), chalk.dim('—')]);
 
   let out = table.toString();
-
-  if (lastBlockedAll.length) {
-    const grouped = new Map<string, number>();
-    for (const { ticket } of lastBlockedAll) {
-      const k = ticket.project?.name ?? '(no project)';
-      grouped.set(k, (grouped.get(k) ?? 0) + 1);
-    }
-    const summary = [...grouped.entries()].map(([n, c]) => `${n}×${c}`).join(', ');
-    out += `\n  ${chalk.dim(`Not eligible: ${chalk.yellow(lastBlockedAll.length)} (${summary})`)}`;
-  }
-
   out += `\n  ${chalk.dim(`Updated ${updatedAt}  •  agents ${runningAgents.size}/${MAX_CONCURRENT}  •  boards: ${boards.map((b) => b.ticketPrefix).join(', ')}  •  next poll in ${POLL_INTERVAL_MS / 1000}s`)}`;
   out += `\n  ${chalk.dim(`Type ${chalk.white('resume <id>')} to force-open a session  •  ${chalk.white('help')} for commands`)}`;
   return out;
@@ -1311,6 +1340,7 @@ async function poll(): Promise<void> {
 
   const allEligible: { ticket: Issue; board: BoardConfig }[] = [];
   const allBlocked: { ticket: Issue; board: BoardConfig }[] = [];
+  const allSnapshot: DashboardRow[] = [];
   const allActiveIdentifiers = new Set<string>();
 
   for (const board of boards) {
@@ -1418,6 +1448,15 @@ async function poll(): Promise<void> {
       allEligible.push({ ticket: t, board });
     }
 
+    // Snapshot every fetched ticket for the dashboard (ticket-centric view)
+    for (const t of todoTickets) {
+      allSnapshot.push({ ticket: t, board, state: isEligible(t, board) ? 'todo' : 'blocked' });
+    }
+    for (const t of inProgressTickets) allSnapshot.push({ ticket: t, board, state: 'inProgress' });
+    for (const t of humanReviewTickets) allSnapshot.push({ ticket: t, board, state: 'humanReview' });
+    for (const t of mergingTickets) allSnapshot.push({ ticket: t, board, state: 'merging' });
+    for (const t of reworkTickets) allSnapshot.push({ ticket: t, board, state: 'rework' });
+
     // Update last-known states
     for (const t of todoTickets) lastKnownState.set(t.identifier, 'Todo');
     for (const t of inProgressTickets) lastKnownState.set(t.identifier, 'In Progress');
@@ -1428,8 +1467,7 @@ async function poll(): Promise<void> {
     await cleanupDoneWorktrees(allActiveIdentifiers, board);
   }
 
-  lastEligibleAll = allEligible;
-  lastBlockedAll = allBlocked;
+  lastSnapshot = allSnapshot;
   renderDashboard();
 
   if (runningAgents.size >= MAX_CONCURRENT) return;
