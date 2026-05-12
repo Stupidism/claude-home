@@ -660,7 +660,11 @@ function writeHtmlDashboard(updatedAt: string): void {
 
   const htmlRows: HtmlRow[] = rawRows.map((row) => {
     const agent = runningAgents.get(row.ticket.identifier);
-    const sessionId = agent ? readSessionId(agent.worktreePath) : null;
+    // `.claude-session-id` only maps to a claude.ai/agents/<id> URL when the
+    // agent was spawned with `--remote-control`. Without it the file still
+    // exists (run-ticket.sh always writes one) but the session was never
+    // registered, so the link would 404. Suppress the column in that case.
+    const sessionId = agent && REMOTE_CONTROL ? readSessionId(agent.worktreePath) : null;
     const repo = resolveRepo(row.ticket, row.board);
     let statusKind: HtmlStatusKind;
     let statusLabel: string;
