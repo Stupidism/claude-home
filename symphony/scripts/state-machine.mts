@@ -61,6 +61,13 @@ export interface Deps<Board extends BoardRef = BoardRef> {
 
   // GitHub / review checks
   areAllPRsMerged(ticket: Issue, board: Board): boolean;
+  /**
+   * Resolve a specific PR URL and return whether GitHub reports it MERGED.
+   * Used as a fallback when the ticket references a pre-existing PR whose
+   * head branch does not match the synthesized branch name (e.g. an agent
+   * recognized the issue was already fixed by an unrelated PR).
+   */
+  isPRUrlMerged(prUrl: string): boolean;
   checkHumanReviewApproval(ticket: Issue, board: Board): Promise<{
     alreadyHandled: boolean;
     aiReviewed: boolean;
@@ -223,6 +230,15 @@ async function handleHumanReview<B extends BoardRef>({ ticket, board, deps }: Di
   // Fast path: PR was merged directly on GitHub, skipping Merging.
   let merged = false;
   try { merged = deps.areAllPRsMerged(ticket, board); } catch { /* best-effort */ }
+
+  const { alreadyHandled, aiReviewed, approved, prUrl } = await deps.checkHumanReviewApproval(ticket, board);
+
+  // Fallback: the agent may have recorded a pre-existing PR (on an unrelated
+  // branch) in the workpad / aiReviewRequested comment. Honor it if merged.
+  if (!merged && prUrl) {
+    try { merged = deps.isPRUrlMerged(prUrl); } catch { /* best-effort */ }
+  }
+
   if (merged) {
     deps.log(`PR merged in Human Review for ${ticket.identifier} — finalizing`);
     try {
@@ -233,8 +249,6 @@ async function handleHumanReview<B extends BoardRef>({ ticket, board, deps }: Di
     }
     return { kind: 'finalizeMergedDuringReview' };
   }
-
-  const { alreadyHandled, aiReviewed, approved, prUrl } = await deps.checkHumanReviewApproval(ticket, board);
 
   let triggeredAI = false;
   if (!aiReviewed && prUrl) {

@@ -496,6 +496,20 @@ function areAllPRsMerged(issue: Issue, board: BoardConfig): boolean {
 }
 
 /**
+ * Resolve an explicit PR URL and report whether GitHub considers it MERGED.
+ * Used by the Human Review fast-path as a fallback when the ticket records a
+ * pre-existing PR (different branch) in the workpad.
+ */
+function isPRUrlMerged(prUrl: string): boolean {
+  const result = child_process.spawnSync(
+    'gh', ['pr', 'view', prUrl, '--json', 'state', '-q', '.state'],
+    { encoding: 'utf8' }
+  );
+  if (result.status !== 0) return false;
+  return result.stdout.trim() === 'MERGED';
+}
+
+/**
  * Remove the local worktree for a ticket (best-effort).
  */
 function removeWorktree(issue: Issue, board: BoardConfig): void {
@@ -1112,7 +1126,22 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
       if (agent?.spawnedForMerging && code === 0) {
         moveToDone(agent.board, agent.issueId, ticket.identifier).catch(() => {});
       } else if (agent) {
-        moveToHumanReview(agent.board, agent.issueId, ticket.identifier).catch(() => {});
+        // Respect terminal/explicit states the agent set during the session.
+        // Without this guard, an agent that finalized to Done (e.g. "already
+        // fixed by an unrelated merged PR") gets dragged back to Human Review
+        // the instant it exits.
+        const guardedAgent = agent;
+        (async () => {
+          try {
+            const stateId = await fetchTicketStateId(guardedAgent.board, ticket.identifier);
+            const owned = new Set([guardedAgent.board.states.todo, guardedAgent.board.states.inProgress, guardedAgent.board.states.rework]);
+            if (stateId && !owned.has(stateId)) {
+              log(chalk.dim(`[symphony] ${ticket.identifier} already in a non-owned state — skipping auto Human Review move`));
+              return;
+            }
+          } catch { /* fall through to default behavior */ }
+          moveToHumanReview(guardedAgent.board, guardedAgent.issueId, ticket.identifier).catch(() => {});
+        })();
       }
     }
     renderDashboard();
@@ -1398,6 +1427,7 @@ async function poll(): Promise<void> {
       resetReworkTicket,
       removeWorktree,
       areAllPRsMerged,
+      isPRUrlMerged,
       checkHumanReviewApproval,
       postComment,
       spawnAIReview,

@@ -75,6 +75,7 @@ function makeDeps(overrides: Partial<Deps<BoardRef>> = {}): { deps: Deps<BoardRe
     resetReworkTicket: recordAsync('resetReworkTicket', undefined),
     removeWorktree: record('removeWorktree'),
     areAllPRsMerged: () => false,
+    isPRUrlMerged: () => false,
     checkHumanReviewApproval: async () => ({ alreadyHandled: false, aiReviewed: false, approved: false, prUrl: null }),
     postComment: recordAsync('postComment', undefined),
     spawnAIReview: record('spawnAIReview'),
@@ -154,6 +155,23 @@ for (const board of boards) {
   test(`[${board.name}] humanReview when PR already merged → removes worktree + moves to Done`, async () => {
     const ticket = stubTicket(board.ticketPrefix, 106, 'humanReview', board);
     const { deps, calls } = makeDeps({ areAllPRsMerged: () => true });
+    const effect = await processTicket('humanReview', ticket, board, deps);
+    assert.deepEqual(effect, { kind: 'finalizeMergedDuringReview' });
+    assert.deepEqual(fnNames(calls), ['removeWorktree', 'moveToDone']);
+  });
+
+  test(`[${board.name}] humanReview when workpad PR URL is merged on an unrelated branch → finalizes via isPRUrlMerged fallback`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 116, 'humanReview', board);
+    const { deps, calls } = makeDeps({
+      areAllPRsMerged: () => false,
+      isPRUrlMerged: (url) => url === 'https://github.com/x/y/pull/999',
+      checkHumanReviewApproval: async () => ({
+        alreadyHandled: false,
+        aiReviewed: true,
+        approved: false,
+        prUrl: 'https://github.com/x/y/pull/999',
+      }),
+    });
     const effect = await processTicket('humanReview', ticket, board, deps);
     assert.deepEqual(effect, { kind: 'finalizeMergedDuringReview' });
     assert.deepEqual(fnNames(calls), ['removeWorktree', 'moveToDone']);
