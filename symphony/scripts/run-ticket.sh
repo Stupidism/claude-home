@@ -58,8 +58,44 @@ echo "  Repo:     ${REPO_ROOT}"
 echo "  Path:     ${WORKTREE_PATH}"
 echo ""
 
+# Wrap `git fetch` so SSH/DNS failures surface a useful hint instead of just
+# exiting 128. Common case: a local proxy (Clash/Surge/Mihomo) returns a fakeIP
+# for github.com but the chosen node doesn't proxy SSH (port 22) or is in a
+# region that can't reach GitHub.
+fetch_or_diagnose() {
+  local branch="$1"
+  local err
+  if err="$(git fetch origin "$branch" --quiet 2>&1)"; then
+    return 0
+  fi
+  printf '%s\n' "$err" >&2
+  if echo "$err" | grep -qE 'Could not read from remote|Connection (closed|refused|timed out)|kex_exchange_identification|Network is unreachable'; then
+    local ip
+    ip="$(dig +short github.com 2>/dev/null | tail -n1)"
+    if [ -n "$ip" ] && echo "$ip" | grep -qE '^(198\.1[89]\.|0\.|10\.|127\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|240\.|fc|fd)'; then
+      cat >&2 <<EOF
+
+⚠ github.com 被解析到非公网 IP (${ip})。
+  很可能是本地代理 (Clash/Surge/Mihomo 等) 用 fakeIP 接管了 DNS，
+  但当前节点 / 规则不支持 GitHub SSH (22)，或所在地区无法访问 GitHub。
+
+  尝试：
+    1. 切换到一个能访问 GitHub 的代理节点；
+    2. 在代理软件中把 github.com 加入直连或 SSH 代理规则；
+    3. 或改用 SSH-over-HTTPS（在 ~/.ssh/config 中）：
+         Host github.com
+           Hostname ssh.github.com
+           Port 443
+           User git
+
+EOF
+    fi
+  fi
+  return 128
+}
+
 cd "$REPO_ROOT"
-git fetch origin "$DEFAULT_BRANCH" --quiet
+fetch_or_diagnose "$DEFAULT_BRANCH"
 
 if [ "$FRESH" = "--fresh" ]; then
   if [ -d "$WORKTREE_PATH" ]; then
@@ -108,7 +144,7 @@ if [ -n "${SETUP_INSTALL_CHECK:-}" ] && [ -n "${SETUP_INSTALL_COMMAND:-}" ]; the
 fi
 
 # Rebase onto latest branch
-git fetch origin "$DEFAULT_BRANCH" --quiet
+fetch_or_diagnose "$DEFAULT_BRANCH"
 if ! git rebase "refs/remotes/origin/${DEFAULT_BRANCH}" --quiet 2>/dev/null; then
   echo "[run] Rebase conflict — squashing local commits and retrying..."
   git rebase --abort 2>/dev/null || true
