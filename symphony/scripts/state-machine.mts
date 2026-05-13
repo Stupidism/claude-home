@@ -91,6 +91,14 @@ export interface Deps<Board extends BoardRef = BoardRef> {
   agentSlotsAvailable(): number;
   failureCountFor(identifier: string): number;
   lastKnownState(identifier: string): string | undefined;
+  /**
+   * If another running agent (i.e. for a different ticket identifier) already
+   * occupies the worktree this ticket would spawn into, return the conflicting
+   * identifier. Otherwise return null. Used to prevent two agents from
+   * trampling each other on a shared worktree (parent ticket + Phase-N rebase
+   * sub-ticket is the canonical case).
+   */
+  worktreeOccupiedBy(ticket: Issue, board: Board): string | null;
 
   // Selection
   isEligible(ticket: Issue, board: Board): boolean;
@@ -207,6 +215,8 @@ interface DispatchArgs<Board extends BoardRef> {
 async function handleTodo<B extends BoardRef>({ ticket, board, deps }: DispatchArgs<B>): Promise<Effect> {
   if (!deps.isEligible(ticket, board)) return { kind: 'noop', reason: 'not eligible' };
   if (deps.isAgentRunning(ticket.identifier)) return { kind: 'noop', reason: 'agent already running' };
+  const occupant = deps.worktreeOccupiedBy(ticket, board);
+  if (occupant) return { kind: 'noop', reason: `worktree busy (held by ${occupant})` };
   if (deps.agentSlotsAvailable() <= 0) return { kind: 'noop', reason: 'no agent slots' };
 
   deps.log(`Claiming ${ticket.identifier} — ${ticket.title}`);
@@ -221,6 +231,8 @@ async function handleInProgress<B extends BoardRef>({ ticket, board, deps }: Dis
   if (deps.failureCountFor(ticket.identifier) >= MAX_RETRIES) {
     return { kind: 'noop', reason: 'max retries exhausted' };
   }
+  const occupant = deps.worktreeOccupiedBy(ticket, board);
+  if (occupant) return { kind: 'noop', reason: `worktree busy (held by ${occupant})` };
   if (deps.agentSlotsAvailable() <= 0) return { kind: 'noop', reason: 'no agent slots' };
 
   const prev = deps.lastKnownState(ticket.identifier);
@@ -315,6 +327,8 @@ async function handleMerging<B extends BoardRef>({ ticket, board, deps }: Dispat
   if (deps.failureCountFor(ticket.identifier) >= MAX_RETRIES) {
     return { kind: 'noop', reason: 'max retries exhausted' };
   }
+  const occupant = deps.worktreeOccupiedBy(ticket, board);
+  if (occupant) return { kind: 'noop', reason: `worktree busy (held by ${occupant})` };
   if (deps.agentSlotsAvailable() <= 0) return { kind: 'noop', reason: 'no agent slots' };
 
   deps.log(`Merging: ${ticket.identifier} — ${ticket.title}`);

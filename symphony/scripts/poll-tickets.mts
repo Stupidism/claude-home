@@ -495,6 +495,30 @@ function branchToFolder(branch: string): string {
 }
 
 /**
+ * Resolve the absolute worktree path a spawn for `issue` would use. Single
+ * source of truth so the spawn path and the worktree-busy guard agree.
+ */
+function computeWorktreePath(issue: Issue, board: BoardConfig): { branch: string; worktreePath: string } {
+  const repo = resolveRepo(issue, board);
+  const worktreesDir = repo.worktreesDir.replace(/^~/, process.env['HOME'] ?? '~');
+  const branch = branchForIssue(issue);
+  return { branch, worktreePath: path.join(worktreesDir, branchToFolder(branch)) };
+}
+
+/**
+ * Return the identifier of a different ticket whose agent currently runs on
+ * the worktree `issue` would spawn into, or null if the worktree is free.
+ */
+function worktreeOccupiedBy(issue: Issue, board: BoardConfig): string | null {
+  const { worktreePath } = computeWorktreePath(issue, board);
+  for (const [otherId, other] of runningAgents) {
+    if (otherId === issue.identifier) continue;
+    if (other.worktreePath === worktreePath) return otherId;
+  }
+  return null;
+}
+
+/**
  * Check whether all PRs for a ticket's branch have been merged on GitHub
  * (i.e. at least one merged PR exists and no open PRs remain).
  * Returns true only when it is safe to finalize: merged exists AND no open PR.
@@ -1080,10 +1104,20 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
   const repoPath = repo.path.replace(/^~/, process.env['HOME'] ?? '~');
   const worktreesDir = repo.worktreesDir.replace(/^~/, process.env['HOME'] ?? '~');
 
-  const slug = ticket.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-').slice(0, 40).replace(/-$/, '');
-  const branch = `feat/${ticket.identifier}-${slug}`;
-  const folder = branchToFolder(branch);
-  const worktreePath = path.join(worktreesDir, folder);
+  const { branch, worktreePath } = computeWorktreePath(ticket, board);
+
+  // Defense-in-depth: even if state-machine guards are bypassed (custom
+  // dispatch, future code paths), refuse a spawn that would collide with
+  // an existing agent's worktree. Prevents the WOR-153 retry storm where
+  // a parent ticket in Merging spawns concurrently with a Phase-N sub-ticket
+  // mid-rebase on the same worktree.
+  for (const [otherId, other] of runningAgents) {
+    if (otherId === ticket.identifier) continue;
+    if (other.worktreePath === worktreePath) {
+      log(chalk.yellow(`[${timestamp()}] ⏭ Worktree busy`) + ` ${chalk.bold(ticket.identifier)} — held by ${otherId} (${worktreePath}) — skipping`);
+      return;
+    }
+  }
 
   const logFile = path.join(logsDir, `symphony-${ticket.identifier}.log`);
   let spawnLogOffset = 0;
@@ -1527,6 +1561,7 @@ async function poll(): Promise<void> {
       agentSlotsAvailable: () => Math.max(0, MAX_CONCURRENT - runningAgents.size),
       failureCountFor: (id) => failureCounts.get(id) ?? 0,
       lastKnownState: (id) => lastKnownState.get(id),
+      worktreeOccupiedBy,
       isEligible,
       log,
     };
@@ -1609,6 +1644,7 @@ async function poll(): Promise<void> {
       agentSlotsAvailable: () => Math.max(0, MAX_CONCURRENT - runningAgents.size),
       failureCountFor: (id) => failureCounts.get(id) ?? 0,
       lastKnownState: (id) => lastKnownState.get(id),
+      worktreeOccupiedBy,
       isEligible, log,
     };
     await processTicket('todo', ticket, board, deps);

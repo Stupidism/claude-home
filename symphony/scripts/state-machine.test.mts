@@ -84,6 +84,7 @@ function makeDeps(overrides: Partial<Deps<BoardRef>> = {}): { deps: Deps<BoardRe
     agentSlotsAvailable: () => 5,
     failureCountFor: () => 0,
     lastKnownState: () => undefined,
+    worktreeOccupiedBy: () => null,
     isEligible: () => true,
     log: () => {},
     ...overrides,
@@ -142,6 +143,53 @@ for (const board of boards) {
     const effect = await processTicket('inProgress', ticket, board, deps);
     assert.deepEqual(effect, { kind: 'noop', reason: 'agent already running' });
     assert.deepEqual(calls, []);
+  });
+
+  test(`[${board.name}] todo when worktree is held by another agent → no-op (no claim, no spawn)`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 120, 'todo', board);
+    const { deps, calls } = makeDeps({ worktreeOccupiedBy: () => `${board.ticketPrefix}-OTHER` });
+    const effect = await processTicket('todo', ticket, board, deps);
+    assert.equal(effect.kind, 'noop');
+    if (effect.kind === 'noop') {
+      assert.match(effect.reason, /worktree busy/);
+      assert.match(effect.reason, new RegExp(`${board.ticketPrefix}-OTHER`));
+    }
+    assert.deepEqual(calls, []);
+  });
+
+  test(`[${board.name}] inProgress when worktree is held by another agent → no-op`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 121, 'inProgress', board);
+    const { deps, calls } = makeDeps({ worktreeOccupiedBy: () => `${board.ticketPrefix}-OTHER` });
+    const effect = await processTicket('inProgress', ticket, board, deps);
+    assert.equal(effect.kind, 'noop');
+    if (effect.kind === 'noop') assert.match(effect.reason, /worktree busy/);
+    assert.deepEqual(calls, []);
+  });
+
+  test(`[${board.name}] merging when worktree is held by another agent → no-op (prevents retry-storm into a mid-rebase worktree)`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 122, 'merging', board);
+    const { deps, calls } = makeDeps({ worktreeOccupiedBy: () => `${board.ticketPrefix}-OTHER` });
+    const effect = await processTicket('merging', ticket, board, deps);
+    assert.equal(effect.kind, 'noop');
+    if (effect.kind === 'noop') assert.match(effect.reason, /worktree busy/);
+    assert.deepEqual(calls, []);
+  });
+
+  test(`[${board.name}] merging into busy worktree even with no failure count + retries reverted → still no-op`, async () => {
+    // Simulates the retry-storm scenario with MAX_RETRIES reverted: even if
+    // failureCountFor returns 0 forever, the worktree-busy guard keeps the
+    // spawn from firing while another agent (e.g. a Phase-N rebase sub-ticket)
+    // still holds the worktree.
+    const ticket = stubTicket(board.ticketPrefix, 123, 'merging', board);
+    const { deps, calls } = makeDeps({
+      failureCountFor: () => 0,
+      worktreeOccupiedBy: () => `${board.ticketPrefix}-258`,
+    });
+    for (let i = 0; i < 10; i++) {
+      const effect = await processTicket('merging', ticket, board, deps);
+      assert.equal(effect.kind, 'noop');
+    }
+    assert.deepEqual(calls, [], 'no spawnAgent calls regardless of how many poll cycles fire');
   });
 
   test(`[${board.name}] inProgress past MAX_RETRIES → no-op`, async () => {
