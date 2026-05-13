@@ -675,6 +675,25 @@ function renderDashboard(): void {
  * then render the document to HTML_DASHBOARD_FILE. Best-effort: write errors
  * are logged but never crash the poller.
  */
+/**
+ * Open the rendered dashboard in the user's default browser on startup so
+ * `--html` is one-shot — no need to copy/paste the path. Hot reload re-execs
+ * this script in a fresh process, which would normally re-open the page; the
+ * SYMPHONY_HTML_OPENED env flag suppresses that.
+ */
+function openHtmlDashboard(): void {
+  if (process.env['SYMPHONY_HTML_OPENED'] === '1') return;
+  process.env['SYMPHONY_HTML_OPENED'] = '1';
+  const cmd = process.platform === 'darwin' ? 'open'
+    : process.platform === 'win32' ? 'start'
+    : 'xdg-open';
+  try {
+    child_process.spawn(cmd, [HTML_DASHBOARD_FILE], { stdio: 'ignore', detached: true }).unref();
+  } catch (err) {
+    log(chalk.yellow(`[symphony] Failed to open HTML dashboard: ${(err as Error).message}`));
+  }
+}
+
 function writeHtmlDashboard(updatedAt: string): void {
   const seen = new Set<string>();
   const rawRows: DashboardRow[] = [];
@@ -1664,6 +1683,7 @@ if (DRY_RUN) console.log(chalk.yellow('  [DRY RUN MODE — no agents will be spa
 if (HTML_MODE) {
   console.log(`  ${chalk.dim('HTML out:')}    ${HTML_DASHBOARD_FILE}`);
   writeHtmlDashboard(new Date().toTimeString().slice(0, 8));
+  openHtmlDashboard();
 }
 console.log('');
 console.log(
