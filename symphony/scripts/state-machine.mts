@@ -312,6 +312,9 @@ async function handleMerging<B extends BoardRef>({ ticket, board, deps }: Dispat
     }
   } catch { /* fall through */ }
 
+  if (deps.failureCountFor(ticket.identifier) >= MAX_RETRIES) {
+    return { kind: 'noop', reason: 'max retries exhausted' };
+  }
   if (deps.agentSlotsAvailable() <= 0) return { kind: 'noop', reason: 'no agent slots' };
 
   deps.log(`Merging: ${ticket.identifier} — ${ticket.title}`);
