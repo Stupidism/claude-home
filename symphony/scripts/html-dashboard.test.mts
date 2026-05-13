@@ -8,7 +8,6 @@ const baseInput = {
   maxConcurrent: 3,
   boards: ['WOR'],
   pollIntervalSeconds: 30,
-  remoteControl: true,
 };
 
 function row(overrides: Partial<HtmlRow> = {}): HtmlRow {
@@ -46,13 +45,6 @@ test('renders ticket link, session link, and runtime when an agent is running', 
 test('omits the session link when no session id is available', () => {
   const html = buildDashboardHtml({ ...baseInput, rows: [row({ sessionId: null, runtimeLabel: null, spawnedAtMs: null })] });
   assert.doesNotMatch(html, /claude\.ai\/agents/);
-});
-
-test('renders session id as plain text when remote control is off', () => {
-  const html = buildDashboardHtml({ ...baseInput, remoteControl: false, rows: [row()] });
-  assert.doesNotMatch(html, /claude\.ai\/agents/);
-  assert.match(html, /class="session-id dim"/);
-  assert.match(html, /abc-123/);
 });
 
 test('renders project and repo as links when URLs are provided', () => {

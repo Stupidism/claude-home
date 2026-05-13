@@ -419,7 +419,7 @@ async function resetReworkTicket(issue: Issue, board: BoardConfig): Promise<void
   const worktreesDir = repo.worktreesDir.replace(/^~/, process.env['HOME'] ?? '~');
   const slug = issue.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-').slice(0, 40).replace(/-$/, '');
   const branch = `feat/${identifier}-${slug}`;
-  const worktreePath = path.join(worktreesDir, branch.replace(/\//g, '--'));
+  const worktreePath = path.join(worktreesDir, branchToFolder(branch));
 
   // 1. Close the open PR (best-effort)
   try {
@@ -482,6 +482,19 @@ function branchForIssue(issue: Issue): string {
 }
 
 /**
+ * Map a branch name to its worktree folder name.
+ *
+ * Must stay in lockstep with `run-ticket.sh`, which uses `tr '/' '--'` — and
+ * because `tr` maps source set to destination set character-by-character, the
+ * trailing `-` in the destination is dropped and `/` is replaced by a single
+ * `-`. Diverging here would make the poller look up `.claude-session-id` and
+ * worktrees at paths that do not exist on disk.
+ */
+function branchToFolder(branch: string): string {
+  return branch.replace(/\//g, '-');
+}
+
+/**
  * Check whether all PRs for a ticket's branch have been merged on GitHub
  * (i.e. at least one merged PR exists and no open PRs remain).
  * Returns true only when it is safe to finalize: merged exists AND no open PR.
@@ -529,7 +542,7 @@ function removeWorktree(issue: Issue, board: BoardConfig): void {
   const repo = resolveRepo(issue, board);
   const repoPath = repo.path.replace(/^~/, process.env['HOME'] ?? '~');
   const worktreesDir = repo.worktreesDir.replace(/^~/, process.env['HOME'] ?? '~');
-  const folder = branchForIssue(issue).replace(/\//g, '--');
+  const folder = branchToFolder(branchForIssue(issue));
   const worktreePath = path.join(worktreesDir, folder);
   if (!fs.existsSync(worktreePath)) return;
   const r = child_process.spawnSync('git', ['worktree', 'remove', '--force', worktreePath], { encoding: 'utf8', cwd: repoPath });
@@ -678,10 +691,11 @@ function writeHtmlDashboard(updatedAt: string): void {
 
   const htmlRows: HtmlRow[] = rawRows.map((row) => {
     const agent = runningAgents.get(row.ticket.identifier);
-    // The session id file is always written by run-ticket.sh, regardless of
-    // remote-control mode. The HTML renderer decides whether to link it to
-    // claude.ai (only valid under --remote-control) or render it as plain text.
-    const sessionId = agent ? readSessionId(agent.worktreePath) : null;
+    // `.claude-session-id` only maps to a claude.ai/agents/<id> URL when the
+    // agent was spawned with `--remote-control`. Without it the file still
+    // exists (run-ticket.sh always writes one) but the session was never
+    // registered, so the link would 404. Suppress the column in that case.
+    const sessionId = agent && REMOTE_CONTROL ? readSessionId(agent.worktreePath) : null;
     const repo = resolveRepo(row.ticket, row.board);
     const repoUrl = repo?.github ? `https://github.com/${repo.github}` : null;
     let statusKind: HtmlStatusKind;
@@ -727,7 +741,6 @@ function writeHtmlDashboard(updatedAt: string): void {
     maxConcurrent: MAX_CONCURRENT,
     boards: boards.map((b) => b.ticketPrefix),
     pollIntervalSeconds: Math.round(POLL_INTERVAL_MS / 1000),
-    remoteControl: REMOTE_CONTROL,
   });
 
   try {
@@ -1050,7 +1063,7 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
 
   const slug = ticket.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-').slice(0, 40).replace(/-$/, '');
   const branch = `feat/${ticket.identifier}-${slug}`;
-  const folder = branch.replace(/\//g, '--');
+  const folder = branchToFolder(branch);
   const worktreePath = path.join(worktreesDir, folder);
 
   const logFile = path.join(logsDir, `symphony-${ticket.identifier}.log`);

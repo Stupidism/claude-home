@@ -46,9 +46,6 @@ export interface HtmlDashboardInput {
   maxConcurrent: number;
   boards: string[];
   pollIntervalSeconds: number;
-  /** When false, sessions are shown as plain text — `claude.ai/agents/<id>`
-   *  would 404 because the session was never registered with claude.ai. */
-  remoteControl: boolean;
 }
 
 /**
@@ -92,21 +89,16 @@ function linkOrText(value: string, url: string | null): string {
   return url ? `<a class="ext" href="${escapeHtml(url)}" target="_blank" rel="noopener">${text}</a>` : text;
 }
 
-function renderRow(row: HtmlRow, remoteControl: boolean): string {
+function renderRow(row: HtmlRow): string {
   const runtimeAttr = row.spawnedAtMs !== null ? ` data-spawned-at="${row.spawnedAtMs}"` : '';
   const runtimeHtml = row.runtimeLabel
     ? ` <span class="dim runtime"${runtimeAttr}>${escapeHtml(row.runtimeLabel)}</span>`
     : '';
   const statusInner = `${escapeHtml(row.statusLabel)}${runtimeHtml}`;
 
-  let session: string;
-  if (row.sessionId) {
-    session = remoteControl
-      ? `<a class="session" href="${escapeHtml(sessionUrl(row.sessionId))}" target="_blank" rel="noopener">▶ open</a>`
-      : `<span class="session-id dim" title="claude --resume ${escapeHtml(row.sessionId)}">${escapeHtml(row.sessionId.slice(0, 8))}…</span>`;
-  } else {
-    session = '<span class="dim">—</span>';
-  }
+  const session = row.sessionId
+    ? `<a class="session" href="${escapeHtml(sessionUrl(row.sessionId))}" target="_blank" rel="noopener">▶ open</a>`
+    : '<span class="dim">—</span>';
 
   const ticket = row.ticketUrl
     ? `<a class="ticket" href="${escapeHtml(row.ticketUrl)}" target="_blank" rel="noopener">${escapeHtml(row.identifier)}</a>`
@@ -124,7 +116,7 @@ function renderRow(row: HtmlRow, remoteControl: boolean): string {
 
 export function buildDashboardHtml(input: HtmlDashboardInput): string {
   const rowsHtml = input.rows.length
-    ? input.rows.map((r) => renderRow(r, input.remoteControl)).join('\n')
+    ? input.rows.map(renderRow).join('\n')
     : `      <tr><td colspan="6" class="dim center">(no eligible tickets)</td></tr>`;
 
   const pollSeconds = Math.max(1, input.pollIntervalSeconds);
@@ -171,7 +163,6 @@ export function buildDashboardHtml(input: HtmlDashboardInput): string {
   a.session:hover { text-decoration: underline; }
   a.ext { color: var(--accent); text-decoration: none; }
   a.ext:hover { text-decoration: underline; }
-  .session-id { font-family: "SF Mono", Menlo, monospace; }
   .dim { color: var(--fg-dim); }
   .center { text-align: center; }
   .status-running { color: var(--cyan); }
