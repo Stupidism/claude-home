@@ -69,13 +69,14 @@ async function jiraRequest(board: BoardLike, pathAndQuery: string, init?: Reques
  *
  * Board configs route by epic key, e.g. `"linearProjectId": "UP-41"`.
  */
-function resolveEpic(raw: JiraIssue): { id: string; name: string } | null {
+function resolveEpic(raw: JiraIssue, baseUrl: string): { id: string; name: string; url: string | null } | null {
+  const epicUrl = (key: string) => (baseUrl ? `${baseUrl}/browse/${key}` : null);
   if (raw.fields.issuetype?.name === 'Epic') {
-    return { id: raw.key, name: raw.fields.summary };
+    return { id: raw.key, name: raw.fields.summary, url: epicUrl(raw.key) };
   }
   const parent = raw.fields.parent;
   if (parent?.fields?.issuetype?.name === 'Epic') {
-    return { id: parent.key, name: parent.fields.summary };
+    return { id: parent.key, name: parent.fields.summary, url: epicUrl(parent.key) };
   }
   return null;
 }
@@ -88,7 +89,7 @@ function toIssue(board: BoardLike, raw: JiraIssue): Issue {
     title: raw.fields.summary,
     description: raw.fields.description ?? null,
     url: `${base}/browse/${raw.key}`,
-    project: resolveEpic(raw),
+    project: resolveEpic(raw, base),
     // `id` is the status *name*, not Jira's numeric status ID — Jira boards
     // configure Symphony states by name (see board.states), so the poller
     // compares against names when checking transitions.

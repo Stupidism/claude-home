@@ -419,7 +419,7 @@ async function resetReworkTicket(issue: Issue, board: BoardConfig): Promise<void
   const worktreesDir = repo.worktreesDir.replace(/^~/, process.env['HOME'] ?? '~');
   const slug = issue.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-').slice(0, 40).replace(/-$/, '');
   const branch = `feat/${identifier}-${slug}`;
-  const worktreePath = path.join(worktreesDir, branch.replace(/\//g, '--'));
+  const worktreePath = path.join(worktreesDir, branchToFolder(branch));
 
   // 1. Close the open PR (best-effort)
   try {
@@ -482,6 +482,19 @@ function branchForIssue(issue: Issue): string {
 }
 
 /**
+ * Map a branch name to its worktree folder name.
+ *
+ * Must stay in lockstep with `run-ticket.sh`, which uses `tr '/' '--'` — and
+ * because `tr` maps source set to destination set character-by-character, the
+ * trailing `-` in the destination is dropped and `/` is replaced by a single
+ * `-`. Diverging here would make the poller look up `.claude-session-id` and
+ * worktrees at paths that do not exist on disk.
+ */
+function branchToFolder(branch: string): string {
+  return branch.replace(/\//g, '-');
+}
+
+/**
  * Check whether all PRs for a ticket's branch have been merged on GitHub
  * (i.e. at least one merged PR exists and no open PRs remain).
  * Returns true only when it is safe to finalize: merged exists AND no open PR.
@@ -529,7 +542,7 @@ function removeWorktree(issue: Issue, board: BoardConfig): void {
   const repo = resolveRepo(issue, board);
   const repoPath = repo.path.replace(/^~/, process.env['HOME'] ?? '~');
   const worktreesDir = repo.worktreesDir.replace(/^~/, process.env['HOME'] ?? '~');
-  const folder = branchForIssue(issue).replace(/\//g, '--');
+  const folder = branchToFolder(branchForIssue(issue));
   const worktreePath = path.join(worktreesDir, folder);
   if (!fs.existsSync(worktreePath)) return;
   const r = child_process.spawnSync('git', ['worktree', 'remove', '--force', worktreePath], { encoding: 'utf8', cwd: repoPath });
@@ -662,6 +675,25 @@ function renderDashboard(): void {
  * then render the document to HTML_DASHBOARD_FILE. Best-effort: write errors
  * are logged but never crash the poller.
  */
+/**
+ * Open the rendered dashboard in the user's default browser on startup so
+ * `--html` is one-shot — no need to copy/paste the path. Hot reload re-execs
+ * this script in a fresh process, which would normally re-open the page; the
+ * SYMPHONY_HTML_OPENED env flag suppresses that.
+ */
+function openHtmlDashboard(): void {
+  if (process.env['SYMPHONY_HTML_OPENED'] === '1') return;
+  process.env['SYMPHONY_HTML_OPENED'] = '1';
+  const cmd = process.platform === 'darwin' ? 'open'
+    : process.platform === 'win32' ? 'start'
+    : 'xdg-open';
+  try {
+    child_process.spawn(cmd, [HTML_DASHBOARD_FILE], { stdio: 'ignore', detached: true }).unref();
+  } catch (err) {
+    log(chalk.yellow(`[symphony] Failed to open HTML dashboard: ${(err as Error).message}`));
+  }
+}
+
 function writeHtmlDashboard(updatedAt: string): void {
   const seen = new Set<string>();
   const rawRows: DashboardRow[] = [];
@@ -684,13 +716,16 @@ function writeHtmlDashboard(updatedAt: string): void {
     // registered, so the link would 404. Suppress the column in that case.
     const sessionId = agent && REMOTE_CONTROL ? readSessionId(agent.worktreePath) : null;
     const repo = resolveRepo(row.ticket, row.board);
+    const repoUrl = repo?.github ? `https://github.com/${repo.github}` : null;
     let statusKind: HtmlStatusKind;
     let statusLabel: string;
     let runtimeLabel: string | null = null;
+    let spawnedAtMs: number | null = null;
     if (agent) {
       statusKind = agent.spawnedForMerging ? 'merging' : 'running';
       statusLabel = agent.spawnedForMerging ? 'Merging' : 'Running';
       runtimeLabel = formatDuration(Date.now() - agent.spawnedAt);
+      spawnedAtMs = agent.spawnedAt;
     } else {
       statusKind = row.state;
       statusLabel = ({
@@ -708,9 +743,12 @@ function writeHtmlDashboard(updatedAt: string): void {
       statusLabel,
       statusKind,
       project: row.ticket.project?.name ?? '—',
+      projectUrl: row.ticket.project?.url ?? null,
       repo: repo?.name ?? '—',
+      repoUrl,
       summary: row.ticket.title,
       sessionId,
+      spawnedAtMs,
       runtimeLabel,
     };
   });
@@ -1044,7 +1082,7 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
 
   const slug = ticket.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-').slice(0, 40).replace(/-$/, '');
   const branch = `feat/${ticket.identifier}-${slug}`;
-  const folder = branch.replace(/\//g, '--');
+  const folder = branchToFolder(branch);
   const worktreePath = path.join(worktreesDir, folder);
 
   const logFile = path.join(logsDir, `symphony-${ticket.identifier}.log`);
@@ -1645,6 +1683,7 @@ if (DRY_RUN) console.log(chalk.yellow('  [DRY RUN MODE — no agents will be spa
 if (HTML_MODE) {
   console.log(`  ${chalk.dim('HTML out:')}    ${HTML_DASHBOARD_FILE}`);
   writeHtmlDashboard(new Date().toTimeString().slice(0, 8));
+  openHtmlDashboard();
 }
 console.log('');
 console.log(

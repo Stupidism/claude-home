@@ -17,9 +17,12 @@ function row(overrides: Partial<HtmlRow> = {}): HtmlRow {
     statusLabel: 'Running',
     statusKind: 'running',
     project: 'symphony',
+    projectUrl: 'https://linear.app/team/project/symphony',
     repo: 'claude-home',
+    repoUrl: 'https://github.com/Stupidism/claude-home',
     summary: 'Add HTML visualizer',
     sessionId: 'abc-123',
+    spawnedAtMs: 1700000000000,
     runtimeLabel: '12s',
     ...overrides,
   };
@@ -40,8 +43,28 @@ test('renders ticket link, session link, and runtime when an agent is running', 
 });
 
 test('omits the session link when no session id is available', () => {
-  const html = buildDashboardHtml({ ...baseInput, rows: [row({ sessionId: null, runtimeLabel: null })] });
+  const html = buildDashboardHtml({ ...baseInput, rows: [row({ sessionId: null, runtimeLabel: null, spawnedAtMs: null })] });
   assert.doesNotMatch(html, /claude\.ai\/agents/);
+});
+
+test('renders project and repo as links when URLs are provided', () => {
+  const html = buildDashboardHtml({ ...baseInput, rows: [row()] });
+  assert.match(html, /href="https:\/\/linear\.app\/team\/project\/symphony"/);
+  assert.match(html, /href="https:\/\/github\.com\/Stupidism\/claude-home"/);
+});
+
+test('falls back to plain text for project and repo when URLs are missing', () => {
+  const html = buildDashboardHtml({ ...baseInput, rows: [row({ projectUrl: null, repoUrl: null })] });
+  assert.doesNotMatch(html, /href="https:\/\/linear\.app\/team\/project/);
+  assert.doesNotMatch(html, /href="https:\/\/github\.com\/Stupidism\/claude-home"/);
+});
+
+test('embeds a client-side ticker so runtime and countdown update between refreshes', () => {
+  const html = buildDashboardHtml({ ...baseInput, rows: [row()] });
+  assert.match(html, /data-spawned-at="1700000000000"/);
+  assert.match(html, /id="next-poll">30</);
+  assert.match(html, /id="updated-at">12:34:56</);
+  assert.match(html, /setInterval\(tick, 1000\)/);
 });
 
 test('shows an empty-state row when there are no rows', () => {

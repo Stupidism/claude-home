@@ -25,9 +25,17 @@ export interface HtmlRow {
   statusLabel: string;
   statusKind: HtmlStatusKind;
   project: string;
+  projectUrl: string | null;
   repo: string;
+  repoUrl: string | null;
   summary: string;
   sessionId: string | null;
+  /**
+   * Epoch milliseconds when the agent was spawned. When present, the dashboard
+   * ticks the runtime label client-side every second so the user does not have
+   * to wait for the next poll to see updated durations.
+   */
+  spawnedAtMs: number | null;
   runtimeLabel: string | null;
 }
 
@@ -76,10 +84,17 @@ function escapeHtml(s: string): string {
   });
 }
 
+function linkOrText(value: string, url: string | null): string {
+  const text = escapeHtml(value);
+  return url ? `<a class="ext" href="${escapeHtml(url)}" target="_blank" rel="noopener">${text}</a>` : text;
+}
+
 function renderRow(row: HtmlRow): string {
-  const statusInner = row.runtimeLabel
-    ? `${escapeHtml(row.statusLabel)} <span class="dim">${escapeHtml(row.runtimeLabel)}</span>`
-    : escapeHtml(row.statusLabel);
+  const runtimeAttr = row.spawnedAtMs !== null ? ` data-spawned-at="${row.spawnedAtMs}"` : '';
+  const runtimeHtml = row.runtimeLabel
+    ? ` <span class="dim runtime"${runtimeAttr}>${escapeHtml(row.runtimeLabel)}</span>`
+    : '';
+  const statusInner = `${escapeHtml(row.statusLabel)}${runtimeHtml}`;
 
   const session = row.sessionId
     ? `<a class="session" href="${escapeHtml(sessionUrl(row.sessionId))}" target="_blank" rel="noopener">▶ open</a>`
@@ -92,8 +107,8 @@ function renderRow(row: HtmlRow): string {
   return `      <tr data-status="${escapeHtml(row.statusKind)}">
         <td class="id">${ticket}</td>
         <td class="status status-${escapeHtml(row.statusKind)}">${statusInner}</td>
-        <td>${escapeHtml(row.project)}</td>
-        <td>${escapeHtml(row.repo)}</td>
+        <td>${linkOrText(row.project, row.projectUrl)}</td>
+        <td>${linkOrText(row.repo, row.repoUrl)}</td>
         <td class="summary">${escapeHtml(row.summary)}</td>
         <td>${session}</td>
       </tr>`;
@@ -104,18 +119,18 @@ export function buildDashboardHtml(input: HtmlDashboardInput): string {
     ? input.rows.map(renderRow).join('\n')
     : `      <tr><td colspan="6" class="dim center">(no eligible tickets)</td></tr>`;
 
-  const meta = [
-    `Updated ${escapeHtml(input.updatedAt)}`,
-    `agents ${input.runningAgents}/${input.maxConcurrent}`,
-    `boards: ${escapeHtml(input.boards.join(', '))}`,
-    `next poll in ${input.pollIntervalSeconds}s`,
-  ].join('  •  ');
+  const pollSeconds = Math.max(1, input.pollIntervalSeconds);
+  const meta =
+    `Updated <span id="updated-at">${escapeHtml(input.updatedAt)}</span>` +
+    `  •  agents ${input.runningAgents}/${input.maxConcurrent}` +
+    `  •  boards: ${escapeHtml(input.boards.join(', '))}` +
+    `  •  next poll in <span id="next-poll">${pollSeconds}</span>s`;
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta http-equiv="refresh" content="${Math.max(1, input.pollIntervalSeconds)}" />
+<meta http-equiv="refresh" content="${pollSeconds}" />
 <title>Symphony Poller — ${escapeHtml(input.boards.join(', '))}</title>
 <style>
   :root {
@@ -146,6 +161,8 @@ export function buildDashboardHtml(input: HtmlDashboardInput): string {
   a.ticket:hover { text-decoration: underline; }
   a.session { color: var(--green); text-decoration: none; font-weight: 500; }
   a.session:hover { text-decoration: underline; }
+  a.ext { color: var(--accent); text-decoration: none; }
+  a.ext:hover { text-decoration: underline; }
   .dim { color: var(--fg-dim); }
   .center { text-align: center; }
   .status-running { color: var(--cyan); }
@@ -175,6 +192,42 @@ export function buildDashboardHtml(input: HtmlDashboardInput): string {
 ${rowsHtml}
     </tbody>
   </table>
+<script>
+(function () {
+  function pad(n) { return n < 10 ? '0' + n : '' + n; }
+  function fmtRuntime(ms) {
+    var s = Math.floor(ms / 1000);
+    if (s < 60) return s + 's';
+    var m = Math.floor(s / 60);
+    if (m < 60) return m + 'm';
+    var h = Math.floor(m / 60);
+    return h + 'h' + (m % 60) + 'm';
+  }
+  function tickRuntimes() {
+    var now = Date.now();
+    var nodes = document.querySelectorAll('.runtime[data-spawned-at]');
+    for (var i = 0; i < nodes.length; i++) {
+      var t = parseInt(nodes[i].getAttribute('data-spawned-at'), 10);
+      if (!isNaN(t)) nodes[i].textContent = fmtRuntime(now - t);
+    }
+  }
+  var pollSeconds = ${pollSeconds};
+  var remaining = pollSeconds;
+  var nextPoll = document.getElementById('next-poll');
+  var updatedAt = document.getElementById('updated-at');
+  function tick() {
+    tickRuntimes();
+    if (nextPoll) nextPoll.textContent = remaining > 0 ? remaining : 0;
+    if (remaining <= 0 && updatedAt) {
+      var d = new Date();
+      updatedAt.textContent = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    }
+    remaining--;
+  }
+  tick();
+  setInterval(tick, 1000);
+})();
+</script>
 </body>
 </html>
 `;

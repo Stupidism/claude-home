@@ -19,7 +19,7 @@ async function linearQuery<T>(query: string, variables?: Record<string, unknown>
 const ISSUE_FIELDS = `id identifier title description url
     state { id name }
     assignee { id name }
-    project { id name }`;
+    project { id name url }`;
 
 export const linearAdapter: TicketSystemAdapter = {
   async fetchTicketsByState(board, stateKey, assigneeId) {

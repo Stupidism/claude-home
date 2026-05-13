@@ -14,7 +14,7 @@ export interface Issue {
   title: string;
   description: string | null;
   url: string;
-  project: { id: string; name: string } | null;
+  project: { id: string; name: string; url: string | null } | null;
   state: { id: string; name: string };
   assignee: { id: string; name: string } | null;
 }
