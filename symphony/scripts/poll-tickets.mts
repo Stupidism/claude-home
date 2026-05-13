@@ -678,19 +678,21 @@ function writeHtmlDashboard(updatedAt: string): void {
 
   const htmlRows: HtmlRow[] = rawRows.map((row) => {
     const agent = runningAgents.get(row.ticket.identifier);
-    // `.claude-session-id` only maps to a claude.ai/agents/<id> URL when the
-    // agent was spawned with `--remote-control`. Without it the file still
-    // exists (run-ticket.sh always writes one) but the session was never
-    // registered, so the link would 404. Suppress the column in that case.
-    const sessionId = agent && REMOTE_CONTROL ? readSessionId(agent.worktreePath) : null;
+    // The session id file is always written by run-ticket.sh, regardless of
+    // remote-control mode. The HTML renderer decides whether to link it to
+    // claude.ai (only valid under --remote-control) or render it as plain text.
+    const sessionId = agent ? readSessionId(agent.worktreePath) : null;
     const repo = resolveRepo(row.ticket, row.board);
+    const repoUrl = repo?.github ? `https://github.com/${repo.github}` : null;
     let statusKind: HtmlStatusKind;
     let statusLabel: string;
     let runtimeLabel: string | null = null;
+    let spawnedAtMs: number | null = null;
     if (agent) {
       statusKind = agent.spawnedForMerging ? 'merging' : 'running';
       statusLabel = agent.spawnedForMerging ? 'Merging' : 'Running';
       runtimeLabel = formatDuration(Date.now() - agent.spawnedAt);
+      spawnedAtMs = agent.spawnedAt;
     } else {
       statusKind = row.state;
       statusLabel = ({
@@ -708,9 +710,12 @@ function writeHtmlDashboard(updatedAt: string): void {
       statusLabel,
       statusKind,
       project: row.ticket.project?.name ?? '—',
+      projectUrl: row.ticket.project?.url ?? null,
       repo: repo?.name ?? '—',
+      repoUrl,
       summary: row.ticket.title,
       sessionId,
+      spawnedAtMs,
       runtimeLabel,
     };
   });
@@ -722,6 +727,7 @@ function writeHtmlDashboard(updatedAt: string): void {
     maxConcurrent: MAX_CONCURRENT,
     boards: boards.map((b) => b.ticketPrefix),
     pollIntervalSeconds: Math.round(POLL_INTERVAL_MS / 1000),
+    remoteControl: REMOTE_CONTROL,
   });
 
   try {
