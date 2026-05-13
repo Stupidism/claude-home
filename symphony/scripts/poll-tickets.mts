@@ -889,7 +889,7 @@ function reloadNow(reason: string): void {
   child_process.spawn(
     'sh',
     ['-c', `while kill -0 ${pid} 2>/dev/null; do sleep 0.2; done; exec ${cmd}`],
-    { detached: true, stdio: 'inherit', cwd: process.cwd() }
+    { detached: false, stdio: 'inherit', cwd: process.cwd() }
   ).unref();
 
   setTimeout(() => process.exit(0), 100);
