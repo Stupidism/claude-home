@@ -260,6 +260,14 @@ for (const board of boards) {
     assert.equal(spawnArgs[3], true);
   });
 
+  test(`[${board.name}] merging past MAX_RETRIES → no-op`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 111, 'merging', board);
+    const { deps, calls } = makeDeps({ failureCountFor: () => 99 });
+    const effect = await processTicket('merging', ticket, board, deps);
+    assert.deepEqual(effect, { kind: 'noop', reason: 'max retries exhausted' });
+    assert.deepEqual(calls, []);
+  });
+
   test(`[${board.name}] rework with no running agent → resetReworkTicket`, async () => {
     const ticket = stubTicket(board.ticketPrefix, 111, 'rework', board);
     const { deps, calls } = makeDeps();
