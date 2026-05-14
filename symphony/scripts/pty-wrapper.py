@@ -88,8 +88,10 @@ ANSI_RE = re.compile(
     rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|[\x00-\x08\x0b\x0c\x0e-\x1f]"
 )
 SCAN_BUF_MAX = 8192
+ERROR_TAIL_MAX = 4096  # bytes of buffer to dump on non-zero exit
 scan_buf = b""  # raw bytes — ANSI is stripped on the whole buffer each iter
                 # so escape sequences split across reads are handled cleanly.
+rate_limit_hit = False
 
 while True:
     try:
@@ -108,6 +110,7 @@ while True:
             os.write(1, line + b"\n")
         except OSError:
             pass
+        rate_limit_hit = True
         try:
             proc.terminate()
         except Exception:
@@ -119,4 +122,23 @@ try:
 except subprocess.TimeoutExpired:
     proc.kill()
     proc.wait()
+
+# Surface claude's exit error. When claude exits with a non-zero status,
+# the TUI output (including stderr) is otherwise discarded by the scan
+# loop, leaving symphony-<ticket>.log with only the run-ticket.sh prelude.
+# Dump the tail of scan_buf — with ANSI stripped — so the actual error
+# message lands in the log. Skip when we already wrote the rate-limit
+# banner, since that terminated the child ourselves.
+if proc.returncode != 0 and not rate_limit_hit and scan_buf:
+    tail = ANSI_RE.sub(b"", scan_buf)[-ERROR_TAIL_MAX:]
+    if tail.strip():
+        try:
+            os.write(1, b"--- claude pty output (tail) ---\n")
+            os.write(1, tail)
+            if not tail.endswith(b"\n"):
+                os.write(1, b"\n")
+            os.write(1, b"--- end claude pty output ---\n")
+        except OSError:
+            pass
+
 sys.exit(proc.returncode)
