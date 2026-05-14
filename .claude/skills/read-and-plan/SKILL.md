@@ -68,9 +68,15 @@ Once a project entry is matched (or you've fallen back to `defaultRepo`):
 
 The poller picks a worktree directory based on its own repo resolution. If that resolution is wrong (e.g. the poller fell back to `defaultRepo` because the `project:*` label wasn't yet mapped in the board config), the current worktree sits inside the wrong repo and any edits you make will land on the wrong codebase.
 
-Compare:
+Compute the expected repo using the same precedence the poller uses (`resolveRepo` in `symphony/scripts/poll-tickets.mts`):
 
-- **Expected repo:** the `primaryRepo` from Step 3 (or `defaultRepo` if no project matched). Look up its `worktreesDir` in `board.repos[]`.
+1. **Sentry override** — if the ticket description contains a Sentry project slug that matches a `board.repos[].sentryProject` (or, when unset, `board.repos[].name`), the poller routes to that repo. Use it as the expected repo and skip the next steps.
+2. **Project mapping** — otherwise, use the `primaryRepo` from the matched `projects[]` entry (Step 3).
+3. **Default** — otherwise, use `board.defaultRepo`.
+
+Then compare:
+
+- **Expected repo's `worktreesDir`** (looked up in `board.repos[]`).
 - **Actual worktree:** the current working directory (`$PWD` / `$WORKTREE_PATH`).
 
 If `$PWD` is not inside the expected repo's `worktreesDir`, **stop immediately** and surface this as a **setup error**:
