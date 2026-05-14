@@ -58,7 +58,7 @@ const HTML_DASHBOARD_FILE = path.join(os.tmpdir(), 'symphony-dashboard.html');
 // ── Config types ──────────────────────────────────────────────────────────────
 
 /** Slack-system config block. Appears at any level (global, board, project, repo)
- *  and is deep-merged top-down by `resolveConfig`. */
+ *  and is deep-merged top-down by `resolveSlack`. */
 interface SlackConfig {
   /** Channel for PR review notifications (id is the Slack channel id like "C09..."). */
   codeReviewChannel?: { name: string; id: string };
@@ -67,9 +67,15 @@ interface SlackConfig {
   /** Nickname → Slack user ID. Used by skills like notify-review to @-mention
    *  reviewers without searching Slack each time. */
   reviewers?: Record<string, string>;
+}
+
+/** GitHub-system config block. Appears at any level (global, board, project, repo)
+ *  and is deep-merged top-down by `resolveGithub`. */
+interface GithubConfig {
   /** Comment to post on a PR to trigger an external AI review bot.
    *  When set, the poller posts this instead of having Claude review the diff itself.
-   *  If absent (resolved to undefined), AI review is skipped. */
+   *  An empty string at a lower level disables AI review for that level specifically.
+   *  If absent across all levels, AI review is skipped. */
   codeReviewComment?: string;
 }
 
@@ -78,10 +84,15 @@ interface RepoConfig {
   path: string;
   worktreesDir: string;
   defaultBranch: string;
-  github: string;
+  /** GitHub `owner/repo` slug used by `gh` commands and PR URL construction.
+   *  Renamed from `github` to `githubRepo` in UP-761 so the per-repo `github`
+   *  namespace (`github.codeReviewComment` etc.) doesn't collide with this. */
+  githubRepo: string;
   isMono: boolean;
   /** Per-repo overrides — deep-merged on top of board.slack. */
   slack?: SlackConfig;
+  /** Per-repo GitHub overrides — deep-merged on top of board.github. */
+  github?: GithubConfig;
   /** Sentry project slug (lowercase) for tickets created by the Sentry-Linear /
    *  Sentry-Jira integrations. When unset, the repo name is used. */
   sentryProject?: string;
@@ -104,6 +115,8 @@ interface ProjectConfig {
   jira?: { projectLabel?: string };
   /** Per-project Slack overrides — deep-merged on top of board.slack. */
   slack?: SlackConfig;
+  /** Per-project GitHub overrides — deep-merged on top of board.github. */
+  github?: GithubConfig;
 }
 
 type TicketSystem = 'linear' | 'jira';
@@ -126,6 +139,8 @@ interface BoardConfig {
   jira?: BoardJiraConfig;
   /** Board-level Slack overrides — deep-merged on top of global symphony.slack. */
   slack?: SlackConfig;
+  /** Board-level GitHub overrides — deep-merged on top of global symphony.github. */
+  github?: GithubConfig;
   defaultRepo: string;
   repos: RepoConfig[];
   projects: ProjectConfig[];
@@ -161,6 +176,8 @@ interface SymphonyConfig {
   };
   /** Global Slack defaults — deep-merged into every board's `slack` block. */
   slack?: SlackConfig;
+  /** Global GitHub defaults — deep-merged into every board's `github` block. */
+  github?: GithubConfig;
 }
 
 /** Active state map for a board: the system block whose `states` field the
@@ -214,6 +231,27 @@ function resolveSlack(
   repo?: RepoConfig,
 ): SlackConfig {
   return deepMerge<SlackConfig>(symphony.slack, board.slack, project?.slack, repo?.slack);
+}
+
+/** Resolve effective GitHub config for a (board, project?, repo?) tuple by
+ *  deep-merging global → board → project → repo overrides. */
+function resolveGithub(
+  symphony: SymphonyConfig,
+  board: BoardConfig,
+  project?: ProjectConfig,
+  repo?: RepoConfig,
+): GithubConfig {
+  return deepMerge<GithubConfig>(symphony.github, board.github, project?.github, repo?.github);
+}
+
+/** Look up the Symphony project entry for a ticket. Used by call sites that
+ *  need per-project overrides (e.g. `spawnAIReview` reading project-level
+ *  `github.codeReviewComment`). Returns null when the ticket has no project
+ *  or is not in the board's `projects[]`. */
+function resolveProject(ticket: Issue, board: BoardConfig): ProjectConfig | null {
+  if (!ticket.project) return null;
+  const resolved = projectMap.get(ticket.project.id);
+  return resolved && resolved.board === board ? resolved.project : null;
 }
 
 // ── Load config ───────────────────────────────────────────────────────────────
@@ -817,7 +855,7 @@ function writeHtmlDashboard(updatedAt: string): void {
     // registered, so the link would 404. Suppress the column in that case.
     const sessionId = agent && REMOTE_CONTROL ? readSessionId(agent.worktreePath) : null;
     const repo = resolveRepo(row.ticket, row.board);
-    const repoUrl = repo?.github ? `https://github.com/${repo.github}` : null;
+    const repoUrl = repo?.githubRepo ? `https://github.com/${repo.githubRepo}` : null;
     let statusKind: HtmlStatusKind;
     let statusLabel: string;
     let runtimeLabel: string | null = null;
@@ -1216,7 +1254,7 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
     REPO_PATH: repoPath,
     WORKTREES_DIR: worktreesDir,
     DEFAULT_BRANCH: repo.defaultBranch,
-    GITHUB_REPO: repo.github,
+    GITHUB_REPO: repo.githubRepo,
     IS_MONO: String(repo.isMono ?? false),
     PROJECT_PATH: projectPath,
     // Setup config
@@ -1472,9 +1510,10 @@ function spawnAIReview(issue: Issue, board: BoardConfig, prUrl: string): void {
   const prNumber = prUrl.match(/\/pull\/(\d+)/)?.[1];
   if (!prNumber) return;
   const repoConfig = resolveRepo(issue, board);
-  // Resolved via global → board → repo deep-merge (UP-761). Repo-level
-  // overrides win; an empty string disables AI review for this repo specifically.
-  const codeReviewComment = resolveSlack(symphonyConfig, board, undefined, repoConfig).codeReviewComment;
+  const projectConfig = resolveProject(issue, board) ?? undefined;
+  // Resolved via global → board → project → repo deep-merge (UP-761). Repo-level
+  // overrides win; an empty string at any level disables AI review.
+  const codeReviewComment = resolveGithub(symphonyConfig, board, projectConfig, repoConfig).codeReviewComment;
   if (!codeReviewComment) return; // no review configured for this repo/board — skip
   const repoPath = repoConfig.path.replace(/^~/, process.env['HOME'] ?? '~');
 

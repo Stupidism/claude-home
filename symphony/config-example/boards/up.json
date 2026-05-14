@@ -9,27 +9,27 @@
   "jira": {
     "baseUrl": "https://workstreamhq.atlassian.net",
     "states": {
-      "backlog":     "Backlog",
-      "todo":        "To Do",
-      "inProgress":  "In Progress",
+      "backlog": "Backlog",
+      "todo": "To Do",
+      "inProgress": "In Progress",
       "humanReview": "Human Review",
-      "inReview":    "In Review",
-      "rework":      "Rework",
-      "merging":     "Merging",
-      "done":        "Done"
+      "inReview": "In Review",
+      "rework": "Rework",
+      "merging": "Merging",
+      "done": "Done"
     },
     "transitions": {
-      "backlog":     "YOUR_TRANSITION_ID_BACKLOG",
-      "todo":        "YOUR_TRANSITION_ID_TODO",
-      "inProgress":  "YOUR_TRANSITION_ID_IN_PROGRESS",
+      "backlog": "YOUR_TRANSITION_ID_BACKLOG",
+      "todo": "YOUR_TRANSITION_ID_TODO",
+      "inProgress": "YOUR_TRANSITION_ID_IN_PROGRESS",
       "humanReview": "YOUR_TRANSITION_ID_HUMAN_REVIEW",
-      "inReview":    "YOUR_TRANSITION_ID_IN_REVIEW",
-      "rework":      "YOUR_TRANSITION_ID_REWORK",
-      "merging":     "YOUR_TRANSITION_ID_MERGING",
-      "done":        "YOUR_TRANSITION_ID_DONE"
+      "inReview": "YOUR_TRANSITION_ID_IN_REVIEW",
+      "rework": "YOUR_TRANSITION_ID_REWORK",
+      "merging": "YOUR_TRANSITION_ID_MERGING",
+      "done": "YOUR_TRANSITION_ID_DONE"
     }
   },
-  "slack": {
+  "github": {
     "codeReviewComment": "@codex review"
   },
   "defaultRepo": "workstream-mono",
@@ -40,13 +40,13 @@
       "path": "~/Documents/workstream-mono",
       "worktreesDir": "~/Documents/workstream-mono-worktrees",
       "defaultBranch": "master",
-      "github": "your-org/workstream-mono",
       "isMono": true,
       "setup": {
         "symlinkNodeModules": true,
         "installCommand": "CI=true pnpm install --frozen-lockfile --quiet",
         "installCheck": "pnpm-lock.yaml"
-      }
+      },
+      "githubRepo": "your-org/workstream-mono"
     },
     {
       "name": "claude-home",
@@ -54,11 +54,10 @@
       "path": "~",
       "worktreesDir": "~/Documents/claude-home-worktrees",
       "defaultBranch": "main",
-      "github": "Stupidism/claude-home",
-      "isMono": false,
-      "slack": {
+      "github": {
         "codeReviewComment": "@codex review in short words"
       },
+      "isMono": false,
       "setup": {
         "symlinkNodeModules": false,
         "installCommand": "",

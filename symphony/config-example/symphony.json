@@ -16,5 +16,7 @@
       "id": "YOUR_SLACK_CHANNEL_ID"
     },
     "reviewers": {}
-  }
+  },
+  "_githubComment": "Global GitHub defaults. The poller posts `github.codeReviewComment` on each new PR to trigger an external AI reviewer; deep-merged with board-, project-, and repo-level overrides. Leave the key absent to skip AI review entirely.",
+  "github": {}
 }

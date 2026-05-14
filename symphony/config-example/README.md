@@ -9,7 +9,7 @@ Symphony reads its runtime configuration from `~/symphony/config/`:
 
 ## Layered resolution
 
-Configuration is grouped by external system (`slack`, `linear`, `jira`) and deep-merged across **three levels**:
+Configuration is grouped by external system (`slack`, `github`, `linear`, `jira`) and deep-merged across **three levels**:
 
 ```
 symphony.json   →   boards/<board>.json   →   projects[*]   →   (repos[*] for slack)
@@ -18,7 +18,7 @@ symphony.json   →   boards/<board>.json   →   projects[*]   →   (repos[*] 
 
 Later levels override earlier ones key-by-key for nested objects; arrays and primitives are replaced wholesale.
 
-The poller calls `resolveSlack(symphony, board, project?, repo?)` to compose the final `slack` block. Skills (e.g. `notify-review`) read the resolved view directly when posting review notifications.
+The poller calls `resolveSlack(symphony, board, project?, repo?)` to compose the final `slack` block and `resolveGithub(...)` for the `github` block. Skills (e.g. `notify-review`) read the resolved view directly when posting review notifications.
 
 ## Schema
 
@@ -126,13 +126,22 @@ curl -u "$JIRA_EMAIL:$JIRA_API_TOKEN" "https://<site>.atlassian.net/rest/api/2/i
     "crossPost":         { "name": "#team-frontend", "id": "C9876ZYXW" },
     "reviewers": {
       "wenkang": "U0123ABCD"
-    },
+    }
+  }
+}
+```
+
+#### `github` block (any level)
+
+```json
+{
+  "github": {
     "codeReviewComment": "@your-github-actions-bot review"
   }
 }
 ```
 
-`codeReviewComment` is the comment Symphony posts on a new PR to trigger an external AI reviewer. Set to empty string `""` at the repo level to disable AI review for that repo specifically. When unset across all levels, AI review is skipped.
+`codeReviewComment` is the comment Symphony posts on a new PR to trigger an external AI reviewer. Set to empty string `""` at any level to disable AI review there specifically. When unset across all levels, AI review is skipped.
 
 #### `repos[]` entries
 
@@ -142,9 +151,9 @@ curl -u "$JIRA_EMAIL:$JIRA_API_TOKEN" "https://<site>.atlassian.net/rest/api/2/i
   "path": "~/Documents/workstream-mono",
   "worktreesDir": "~/Documents/workstream-mono-worktrees",
   "defaultBranch": "master",
-  "github": "your-org/workstream-mono",
+  "githubRepo": "your-org/workstream-mono",
   "isMono": true,
-  "slack": { "codeReviewComment": "@codex review in short words" },
+  "github": { "codeReviewComment": "@codex review in short words" },
   "setup": {
     "symlinkNodeModules": true,
     "installCommand": "CI=true pnpm install --frozen-lockfile --quiet",
@@ -178,4 +187,4 @@ Only the system block matching the board's `ticketSystem` is consulted at routin
 
 ## Migrating from the flat schema
 
-The pre-UP-761 schema kept `states`, `transitions`, `jiraBaseUrl`, `linearProjectId`, and `code-review-comment` as top-level keys, and per-repo `code-review-comment` overrides at the root of each `repos[]` entry. The new shape moves each into the appropriate `slack` / `linear` / `jira` block. The behaviour the poller exposes (ticket fetch, state transitions, AI review trigger) is unchanged; only the keys you write in JSON have moved.
+The pre-UP-761 schema kept `states`, `transitions`, `jiraBaseUrl`, `linearProjectId`, and `code-review-comment` as top-level keys, and per-repo `code-review-comment` overrides at the root of each `repos[]` entry. The new shape moves each into the appropriate `slack` / `github` / `linear` / `jira` block. The repo's `owner/repo` slug field was renamed from `github` to `githubRepo` to avoid colliding with the new per-repo `github` namespace. The behaviour the poller exposes (ticket fetch, state transitions, AI review trigger) is unchanged; only the keys you write in JSON have moved.
