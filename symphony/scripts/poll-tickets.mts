@@ -735,6 +735,9 @@ interface AgentEntry {
   worktreePath: string;
   board: BoardConfig;
   logOffset: number;
+  /** Set when a user invoked `kill`/`restart`; the exit handler must skip
+   *  retries, rate-limit checks, and the auto Human Review transition. */
+  userKilled?: boolean;
 }
 
 const runningAgents = new Map<string, AgentEntry>();
@@ -964,11 +967,12 @@ function boardForIdentifier(identifier: string): BoardConfig | null {
 }
 
 /**
- * Force-open a session for any ticket by identifier, regardless of current Linear state.
+ * Force-open a claude session for any ticket by identifier, regardless of
+ * current ticket-system state. Session-only: this never mutates the ticket
+ * — the state-machine handles transitions while the agent runs.
  *   - Already running → no-op (logged)
- *   - Human Review / In Review / Rework → moves to In Progress, spawns in feedback mode
- *   - In Progress (no agent) → spawns in continue mode
- *   - Any other state → moves to In Progress, spawns in continue mode
+ *   - Human Review / In Review / Rework → spawns in feedback mode
+ *   - Any other state → spawns in continue mode
  */
 async function forceResumeTicket(identifier: string): Promise<void> {
   const upper = identifier.toUpperCase();
@@ -1027,6 +1031,7 @@ async function killAgent(identifier: string): Promise<void> {
     return;
   }
 
+  agent.userKilled = true;
   const proc = agent.proc;
   const pid = proc.pid;
   log(chalk.yellow(`[${timestamp()}] ✋ Killing agent ${chalk.bold(upper)}${pid ? ` (PID ${pid})` : ''}`));
@@ -1087,6 +1092,20 @@ async function restartAgent(identifier: string): Promise<void> {
  * so subsequent input keeps working.
  */
 let interactiveCommandsActive = false;
+let activeReadline: readline.Interface | null = null;
+let activeStdinErrorHandler: ((err: NodeJS.ErrnoException) => void) | null = null;
+
+function teardownInteractiveCommands(): void {
+  if (activeStdinErrorHandler) {
+    try { process.stdin.removeListener('error', activeStdinErrorHandler); } catch { /* ignore */ }
+    activeStdinErrorHandler = null;
+  }
+  if (activeReadline) {
+    try { activeReadline.removeAllListeners(); activeReadline.close(); } catch { /* ignore */ }
+    activeReadline = null;
+  }
+  interactiveCommandsActive = false;
+}
 
 async function handleInteractiveLine(line: string): Promise<void> {
   const trimmed = line.trim();
@@ -1144,23 +1163,23 @@ function setupInteractiveCommands(): void {
     const code = err.code ?? '';
     if (code === 'EIO' || code === 'EAGAIN') {
       log(chalk.dim(`[symphony] stdin transient error ${code} — interactive commands rebuilding`));
-      // The current rl Interface is wedged after a stream error; rebuild it
-      // on the next tick so subsequent typing still works.
-      setTimeout(() => {
-        interactiveCommandsActive = false;
-        try { process.stdin.removeListener('error', onStdinError); } catch { /* ignore */ }
-        setupInteractiveCommands();
-      }, 50);
+      // Tear down the current interface (close listeners, drop the error
+      // handler) before rebuilding, otherwise repeated EIO blips accumulate
+      // readline Interfaces and double-fire every typed command.
+      teardownInteractiveCommands();
+      setTimeout(() => setupInteractiveCommands(), 50);
       return;
     }
     log(chalk.dim(`[symphony] stdin error: ${err.message}`));
   };
+  activeStdinErrorHandler = onStdinError;
   process.stdin.on('error', onStdinError);
 
   const rl = readline.createInterface({
     input: process.stdin,
     terminal: false, // don't echo or add readline's own prompt
   });
+  activeReadline = rl;
 
   rl.on('error', (err: NodeJS.ErrnoException) => {
     const code = err.code ?? '';
@@ -1459,6 +1478,15 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
     fs.rmSync(activePidFile, { force: true });
     const agent = runningAgents.get(ticket.identifier);
     runningAgents.delete(ticket.identifier);
+
+    if (agent?.userKilled) {
+      // User-invoked kill/restart — strictly session-only, never touch ticket
+      // state or retry counters. The exit handler's success branch otherwise
+      // races into moveToHumanReview because a SIGTERM exit has signal !=null.
+      log(chalk.yellow(`[${timestamp()}] ✋ Agent killed by user:`) + ` ${chalk.bold(ticket.identifier)}`);
+      renderDashboard();
+      return;
+    }
 
     if (isShuttingDown) {
       log(chalk.yellow(`[${timestamp()}] ⚠ Agent interrupted:`) + ` ${chalk.bold(ticket.identifier)}`);

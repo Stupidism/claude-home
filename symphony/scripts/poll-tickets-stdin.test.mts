@@ -50,6 +50,7 @@ test('EAGAIN on stdin is swallowed too', () => {
   const { input, stdinErrors } = setupHarness();
   const err = Object.assign(new Error('try again'), { code: 'EAGAIN', errno: -35, syscall: 'read' });
   assert.doesNotThrow(() => input.emit('error', err));
+  assert.equal(stdinErrors.length, 1);
   assert.equal(stdinErrors[0]!.code, 'EAGAIN');
 });
 
