@@ -43,7 +43,36 @@
         "installCommand": "CI=true pnpm install --frozen-lockfile --quiet",
         "installCheck": "pnpm-lock.yaml"
       }
+    },
+    {
+      "name": "claude-home",
+      "description": "Symphony autonomous agent system scripts and config (~/symphony), plus Claude Code global settings. All Symphony workflow changes live here.",
+      "path": "~",
+      "worktreesDir": "~/Documents/claude-home-worktrees",
+      "defaultBranch": "main",
+      "github": "Stupidism/claude-home",
+      "isMono": false,
+      "code-review-comment": "@codex review in short words",
+      "setup": {
+        "symlinkNodeModules": false,
+        "installCommand": "",
+        "installCheck": ""
+      }
     }
   ],
-  "projects": []
+  "_projectsComment": "Jira boards route tickets to a project entry via the issue's `project:<name>` label. Set `linearProjectId` to the full label string (e.g. `project:symphony`); the poller matches it against the label on each Jira issue.",
+  "projects": [
+    {
+      "linearProjectId": "project:symphony",
+      "name": "Symphony",
+      "primaryRepo": "claude-home",
+      "repos": [
+        {
+          "name": "claude-home",
+          "path": "~/symphony",
+          "hint": "Symphony autonomous agent system — scripts and config under ~/symphony, all workflow-related changes live here"
+        }
+      ]
+    }
+  ]
 }
