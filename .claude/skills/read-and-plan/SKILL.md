@@ -59,7 +59,10 @@ Once a project entry is matched (or you've fallen back to `defaultRepo`):
 3. For each in-scope repo, also read its top-level `description` from the board's `repos[]` array to understand the tech stack and boundaries.
 4. For multi-repo tickets, note which is `primaryRepo` (where the branch lives) and which are secondary.
 
-**If the ticket's project is not in the config** (e.g. `$PROJECT_PATH` is the repo root, or no `project:*` label matched), treat the current repo as the only affected repo.
+**Fallback summary** (single source of truth for the "no match" case):
+
+- Jira ticket without a matching `project:*` label, or Linear ticket without a matching `projects[].linearProjectId` → use `board.defaultRepo`. Only that repo is in scope.
+- Board has no `projects[]` at all (e.g. standalone single-repo setup where `$PROJECT_PATH` is the repo root) → treat the current repo as the only affected repo.
 
 ### Step 3a — Worktree-repo sanity check
 
