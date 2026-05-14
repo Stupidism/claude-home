@@ -35,6 +35,9 @@ export interface StateKeys {
   rework: string;
   merging: string;
   done: string;
+  /** Terminal cancelled state. Optional — boards that don't model a Cancelled
+   *  status (most Linear teams) omit it and the poller skips the cleanup pass. */
+  cancelled?: string;
 }
 
 export type StateKey = keyof StateKeys;

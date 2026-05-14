@@ -60,6 +60,10 @@ export interface Deps<Board extends BoardRef = BoardRef> {
   // Agent lifecycle
   spawnAgent(ticket: Issue, board: Board, mode: SpawnMode, forMerging?: boolean): void;
   resetReworkTicket(ticket: Issue, board: Board): Promise<void>;
+  /** Close any open PR + delete workpad/lock comments + remove the worktree
+   *  for a ticket that was moved to Cancelled. Mirrors `resetReworkTicket`
+   *  but leaves the ticket in its terminal Cancelled state. */
+  cleanupCancelledTicket(ticket: Issue, board: Board): Promise<void>;
   removeWorktree(ticket: Issue, board: Board): void;
 
   // GitHub / review checks
@@ -121,7 +125,8 @@ export type Effect =
   | { kind: 'humanReviewWaitForApproval' }
   | { kind: 'humanReviewTriggerAI' }
   | { kind: 'humanReviewApproved' }
-  | { kind: 'resetRework' };
+  | { kind: 'resetRework' }
+  | { kind: 'cleanupCancelled' };
 
 export const MAX_RETRIES = 3;
 export const AI_REVIEW_LOCK_PREFIX = '[symphony] aiReviewRequested:';
@@ -147,7 +152,8 @@ export type TicketEvent =
   | { type: 'SPAWN_MERGING' }               // merging → merging (agent runs land skill)
   | { type: 'PR_MERGED' }                   // merging → done
   | { type: 'REWORK_REQUESTED' }            // any → rework (human moves the ticket)
-  | { type: 'REWORK_RESET' };               // rework → todo (after cleanup)
+  | { type: 'REWORK_RESET' }                // rework → todo (after cleanup)
+  | { type: 'CANCELLED' };                  // any → cancelled (human moves the ticket)
 
 export const ticketMachine = setup({
   types: {
@@ -164,6 +170,7 @@ export const ticketMachine = setup({
       on: {
         CLAIM: 'inProgress',
         REWORK_REQUESTED: 'rework',
+        CANCELLED: 'cancelled',
       },
     },
     inProgress: {
@@ -173,6 +180,7 @@ export const ticketMachine = setup({
         AGENT_EXHAUSTED: 'backlog',
         RESUME: 'inProgress',
         REWORK_REQUESTED: 'rework',
+        CANCELLED: 'cancelled',
       },
     },
     humanReview: {
@@ -181,12 +189,14 @@ export const ticketMachine = setup({
         REVIEW_APPROVED: 'inReview',
         PR_MERGED_EARLY: 'done',
         REWORK_REQUESTED: 'rework',
+        CANCELLED: 'cancelled',
       },
     },
     inReview: {
       on: {
         READY_TO_MERGE: 'merging',
         REWORK_REQUESTED: 'rework',
+        CANCELLED: 'cancelled',
       },
     },
     merging: {
@@ -194,14 +204,19 @@ export const ticketMachine = setup({
         SPAWN_MERGING: 'merging',
         PR_MERGED: 'done',
         REWORK_REQUESTED: 'rework',
+        CANCELLED: 'cancelled',
       },
     },
     rework: {
       on: {
         REWORK_RESET: 'todo',
+        CANCELLED: 'cancelled',
       },
     },
     done: {
+      type: 'final',
+    },
+    cancelled: {
       type: 'final',
     },
   },
@@ -352,6 +367,20 @@ async function handleRework<B extends BoardRef>({ ticket, board, deps }: Dispatc
   return { kind: 'resetRework' };
 }
 
+async function handleCancelled<B extends BoardRef>({ ticket, board, deps }: DispatchArgs<B>): Promise<Effect> {
+  if (!deps.isEligible(ticket, board)) return { kind: 'noop', reason: 'not eligible' };
+  // Wait for a running agent to exit first; cleanup happens on the next poll cycle
+  // once the poller's "no longer active" sweep has killed it.
+  if (deps.isAgentRunning(ticket.identifier)) return { kind: 'noop', reason: 'agent still running' };
+
+  try {
+    await deps.cleanupCancelledTicket(ticket, board);
+  } catch (err) {
+    deps.log(`Error cleaning up cancelled ticket ${ticket.identifier}: ${err}`);
+  }
+  return { kind: 'cleanupCancelled' };
+}
+
 // ── Public dispatcher ─────────────────────────────────────────────────────────
 
 /**
@@ -372,6 +401,7 @@ export async function processTicket<B extends BoardRef>(
     case 'humanReview':  return handleHumanReview({ ticket, board, deps });
     case 'merging':      return handleMerging({ ticket, board, deps });
     case 'rework':       return handleRework({ ticket, board, deps });
+    case 'cancelled':    return handleCancelled({ ticket, board, deps });
     case 'inReview':     return { kind: 'noop', reason: 'inReview — waiting for human to move to merging' };
     case 'backlog':      return { kind: 'noop', reason: 'backlog — not actionable' };
     case 'done':         return { kind: 'noop', reason: 'done — terminal' };

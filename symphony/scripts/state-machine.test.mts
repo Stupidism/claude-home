@@ -81,6 +81,7 @@ function makeDeps(overrides: Partial<Deps<BoardRef>> = {}): { deps: Deps<BoardRe
     moveToDone: recordAsync('moveToDone', undefined),
     spawnAgent: record('spawnAgent'),
     resetReworkTicket: recordAsync('resetReworkTicket', undefined),
+    cleanupCancelledTicket: recordAsync('cleanupCancelledTicket', undefined),
     removeWorktree: record('removeWorktree'),
     areAllPRsMerged: () => false,
     isPRUrlMerged: () => false,
@@ -340,6 +341,31 @@ for (const board of boards) {
     assert.deepEqual(calls, []);
   });
 
+  test(`[${board.name}] cancelled with no running agent → cleanupCancelledTicket`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 130, 'rework', board);
+    const { deps, calls } = makeDeps();
+    const effect = await processTicket('cancelled', ticket, board, deps);
+    assert.deepEqual(effect, { kind: 'cleanupCancelled' });
+    assert.deepEqual(fnNames(calls), ['cleanupCancelledTicket']);
+  });
+
+  test(`[${board.name}] cancelled with running agent → wait`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 131, 'rework', board);
+    const { deps, calls } = makeDeps({ isAgentRunning: () => true });
+    const effect = await processTicket('cancelled', ticket, board, deps);
+    assert.deepEqual(effect, { kind: 'noop', reason: 'agent still running' });
+    assert.deepEqual(calls, []);
+  });
+
+  test(`[${board.name}] cancelled swallows cleanupCancelledTicket errors (best-effort)`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 132, 'rework', board);
+    const { deps } = makeDeps({
+      cleanupCancelledTicket: async () => { throw new Error('gh exploded'); },
+    });
+    const effect = await processTicket('cancelled', ticket, board, deps);
+    assert.deepEqual(effect, { kind: 'cleanupCancelled' });
+  });
+
   test(`[${board.name}] inReview / backlog / done → no-op`, async () => {
     const states: StateKey[] = ['inReview', 'backlog', 'done'];
     for (const s of states) {
@@ -423,14 +449,19 @@ for (const board of boards) {
 
 // ── XState chart sanity ───────────────────────────────────────────────────────
 
-test('ticketMachine has all 8 Symphony states', () => {
+test('ticketMachine has all 9 Symphony states', () => {
   const stateIds = Object.keys(ticketMachine.config.states ?? {});
   assert.deepEqual(stateIds.sort(), [
-    'backlog', 'done', 'humanReview', 'inProgress', 'inReview', 'merging', 'rework', 'todo',
+    'backlog', 'cancelled', 'done', 'humanReview', 'inProgress', 'inReview', 'merging', 'rework', 'todo',
   ]);
 });
 
 test('ticketMachine done is a final state', () => {
   const done = ticketMachine.config.states?.done as { type?: string } | undefined;
   assert.equal(done?.type, 'final');
+});
+
+test('ticketMachine cancelled is a final state', () => {
+  const cancelled = ticketMachine.config.states?.cancelled as { type?: string } | undefined;
+  assert.equal(cancelled?.type, 'final');
 });

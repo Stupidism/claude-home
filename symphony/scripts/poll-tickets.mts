@@ -618,6 +618,73 @@ async function resetReworkTicket(issue: Issue, board: BoardConfig): Promise<void
 }
 
 /**
+ * Handle a Cancelled ticket: close the open PR, delete workpad / lock comments,
+ * and remove the local worktree. Leaves the ticket in its terminal Cancelled
+ * state (unlike `resetReworkTicket`, which transitions back to Todo).
+ */
+async function cleanupCancelledTicket(issue: Issue, board: BoardConfig): Promise<void> {
+  const { identifier } = issue;
+  log(chalk.gray(`[${timestamp()}] ✕ Cancelled: cleaning up ${chalk.bold(identifier)}`));
+
+  const repo = resolveRepo(issue, board);
+  const repoPath = repo.path.replace(/^~/, process.env['HOME'] ?? '~');
+  const worktreesDir = repo.worktreesDir.replace(/^~/, process.env['HOME'] ?? '~');
+  const branch = branchForIssue(issue);
+  const worktreePath = path.join(worktreesDir, branchToFolder(branch));
+
+  // 1. Close the open PR (best-effort)
+  try {
+    const listResult = child_process.spawnSync(
+      'gh', ['pr', 'list', '--head', branch, '--state', 'open', '--json', 'number', '--jq', '.[0].number'],
+      { encoding: 'utf8', cwd: repoPath }
+    );
+    if (listResult.status !== 0) {
+      log(chalk.yellow(`[symphony] gh pr list failed for ${identifier}: ${listResult.stderr?.trim() || 'unknown error'}`));
+    }
+    const prNumber = listResult.stdout.trim();
+    if (prNumber && prNumber !== 'null') {
+      const closeResult = child_process.spawnSync(
+        'gh', ['pr', 'close', prNumber, '--delete-branch', '--comment', 'Ticket was cancelled — closing PR automatically.'],
+        { encoding: 'utf8', cwd: repoPath }
+      );
+      if (closeResult.status === 0) {
+        log(chalk.dim(`[symphony] Closed PR #${prNumber} for ${identifier} (cancelled)`));
+      } else {
+        log(chalk.yellow(`[symphony] Failed to close PR #${prNumber} for ${identifier}: ${closeResult.stderr?.trim()}`));
+      }
+    }
+  } catch { /* best-effort */ }
+
+  // 2. Delete stale lock comments + workpad (best-effort)
+  try {
+    const adapter = getAdapter(board);
+    const comments = await adapter.listComments(board, issue.id);
+    const staleComments = comments.filter((c) =>
+      c.body.includes('## Claude Workpad') ||
+      c.body.startsWith('[symphony] aiReviewRequested:') ||
+      c.body.startsWith('[symphony] developerApproved:')
+    );
+    await Promise.all(staleComments.map((c) => adapter.deleteComment(board, issue.id, c.id)));
+    if (staleComments.length) {
+      log(chalk.dim(`[symphony] Deleted ${staleComments.length} stale comment(s) for ${identifier}`));
+    }
+  } catch { /* best-effort */ }
+
+  // 3. Remove local worktree (best-effort)
+  try {
+    if (fs.existsSync(worktreePath)) {
+      const removeResult = child_process.spawnSync('git', ['worktree', 'remove', '--force', worktreePath], { encoding: 'utf8', cwd: repoPath });
+      if (removeResult.status === 0) {
+        child_process.spawnSync('git', ['worktree', 'prune'], { encoding: 'utf8', cwd: repoPath });
+        log(chalk.dim(`[symphony] Removed worktree for ${identifier}`));
+      } else {
+        log(chalk.yellow(`[symphony] Failed to remove worktree for ${identifier}: ${removeResult.stderr?.trim()}`));
+      }
+    }
+  } catch { /* best-effort */ }
+}
+
+/**
  * Derive the branch name for a ticket using the same slug logic as spawnAgent.
  */
 function branchForIssue(issue: Issue): string {
@@ -1646,14 +1713,21 @@ async function poll(): Promise<void> {
 
   for (const board of boards) {
     let todoTickets: Issue[], inProgressTickets: Issue[], humanReviewTickets: Issue[], mergingTickets: Issue[], reworkTickets: Issue[];
+    let cancelledTickets: Issue[] = [];
+    const cancelledConfigured = Boolean(statesFor(board).cancelled);
     try {
-      [todoTickets, inProgressTickets, humanReviewTickets, mergingTickets, reworkTickets] = await Promise.all([
+      const fetches: Promise<Issue[]>[] = [
         fetchTicketsByState(board, 'todo'),
         fetchTicketsByState(board, 'inProgress'),
         fetchTicketsByState(board, 'humanReview'),
         fetchTicketsByState(board, 'merging'),
         fetchTicketsByState(board, 'rework'),
-      ]);
+      ];
+      if (cancelledConfigured) fetches.push(fetchTicketsByState(board, 'cancelled'));
+      const results = await Promise.all(fetches);
+      [todoTickets, inProgressTickets, humanReviewTickets, mergingTickets, reworkTickets] =
+        results.slice(0, 5) as [Issue[], Issue[], Issue[], Issue[], Issue[]];
+      if (cancelledConfigured) cancelledTickets = results[5];
     } catch (err) {
       const msg = String(err);
       const system = ticketSystemFor(board);
@@ -1674,8 +1748,9 @@ async function poll(): Promise<void> {
 
     // Kill agents whose tickets moved out of active states
     const SETTLE_MS = 30_000;
-    // Rework tickets are intentionally excluded: agents for tickets moved to Rework
-    // should be stopped so resetReworkTicket() can run on the next poll cycle.
+    // Rework and Cancelled tickets are intentionally excluded: agents for those
+    // tickets should be stopped so the per-state cleanup handler runs on the
+    // next poll cycle.
     const activeInBoard = new Set([...inProgressTickets.map((t) => t.identifier), ...mergingTickets.map((t) => t.identifier)]);
     for (const [identifier, agent] of runningAgents) {
       if (agent.boardName !== board.name) continue;
@@ -1697,6 +1772,7 @@ async function poll(): Promise<void> {
       moveToDone,
       spawnAgent,
       resetReworkTicket,
+      cleanupCancelledTicket,
       removeWorktree,
       areAllPRsMerged,
       isPRUrlMerged,
@@ -1736,10 +1812,14 @@ async function poll(): Promise<void> {
     };
 
     // Order matters: Human Review and Merging finalize Done tickets which frees
-    // up agent slots; Rework cleans up before classify-and-spawn for new Todos.
+    // up agent slots; Rework / Cancelled cleanup runs before classify-and-spawn
+    // for new Todos so any worktree it frees is immediately reusable.
     await dispatch('humanReview', humanReviewTickets.filter((t) => isEligible(t, board)));
     await dispatch('merging', mergingTickets.filter((t) => isEligible(t, board)), 3000);
     await dispatch('rework', reworkTickets.filter((t) => isEligible(t, board)), 2000);
+    if (cancelledConfigured) {
+      await dispatch('cancelled', cancelledTickets.filter((t) => isEligible(t, board)), 2000);
+    }
     await dispatch('inProgress', inProgressTickets.filter((t) => isEligible(t, board)), 3000);
 
     // Classify todo tickets
@@ -1794,7 +1874,8 @@ async function poll(): Promise<void> {
     }
     const deps: StateMachineDeps<BoardConfig> = {
       moveToInProgress, moveToHumanReview, moveToInReview, moveToTodo, moveToDone,
-      spawnAgent, resetReworkTicket, removeWorktree, areAllPRsMerged,
+      spawnAgent, resetReworkTicket, cleanupCancelledTicket, removeWorktree, areAllPRsMerged,
+      isPRUrlMerged,
       checkHumanReviewApproval, postComment, spawnAIReview, spawnNotifyReview,
       isAgentRunning: (id) => runningAgents.has(id),
       agentSlotsAvailable: () => Math.max(0, MAX_CONCURRENT - runningAgents.size),
