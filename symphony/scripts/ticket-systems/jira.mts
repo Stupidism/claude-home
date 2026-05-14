@@ -25,12 +25,18 @@ interface JiraIssue {
     status: { id: string; name: string };
     assignee: { accountId: string; displayName: string } | null;
     issuetype: { name: string };
+    labels: string[];
     parent?: {
       key: string;
       fields: { summary: string; issuetype: { name: string } };
     };
   };
 }
+
+/** Jira labels of the form `project:<slug>` route a ticket to a Symphony
+ *  project entry. Tickets may have any number of labels, but only the first
+ *  `project:*` label wins. */
+const PROJECT_LABEL_PREFIX = 'project:';
 
 function authHeader(): string {
   const email = process.env['JIRA_EMAIL'] ?? '';
@@ -61,24 +67,16 @@ async function jiraRequest(board: BoardLike, pathAndQuery: string, init?: Reques
  * Resolve Symphony's `project` concept for a Jira issue.
  *
  * Jira "Project" (e.g. UP) corresponds to a Linear *team* — not a Linear project.
- * The closest Jira analogue of a Linear project is the **Epic**. So:
- *   - Epic parent exists → project = { id: epicKey, name: epicSummary }
- *   - Issue itself is an Epic → project points to itself (so agents running on
- *     the epic still match a project entry in the board config)
- *   - Otherwise → null (poller falls back to board.defaultRepo)
+ * To pick a Symphony project entry, we read the issue's `project:<slug>` label.
+ * If none exists, project = null (poller falls back to board.defaultRepo).
  *
- * Board configs route by epic key, e.g. `"linearProjectId": "UP-41"`.
+ * Board configs route by label value, e.g. `"linearProjectId": "project:rebuild-scaffold"`.
  */
-function resolveEpic(raw: JiraIssue, baseUrl: string): { id: string; name: string; url: string | null } | null {
-  const epicUrl = (key: string) => (baseUrl ? `${baseUrl}/browse/${key}` : null);
-  if (raw.fields.issuetype?.name === 'Epic') {
-    return { id: raw.key, name: raw.fields.summary, url: epicUrl(raw.key) };
-  }
-  const parent = raw.fields.parent;
-  if (parent?.fields?.issuetype?.name === 'Epic') {
-    return { id: parent.key, name: parent.fields.summary, url: epicUrl(parent.key) };
-  }
-  return null;
+function resolveProject(raw: JiraIssue): { id: string; name: string; url: string | null } | null {
+  const labels = raw.fields.labels ?? [];
+  const match = labels.find((l) => l.startsWith(PROJECT_LABEL_PREFIX));
+  if (!match) return null;
+  return { id: match, name: match.slice(PROJECT_LABEL_PREFIX.length), url: null };
 }
 
 function toIssue(board: BoardLike, raw: JiraIssue): Issue {
@@ -89,7 +87,7 @@ function toIssue(board: BoardLike, raw: JiraIssue): Issue {
     title: raw.fields.summary,
     description: raw.fields.description ?? null,
     url: `${base}/browse/${raw.key}`,
-    project: resolveEpic(raw, base),
+    project: resolveProject(raw),
     // `id` is the status *name*, not Jira's numeric status ID — Jira boards
     // configure Symphony states by name (see board.states), so the poller
     // compares against names when checking transitions.
@@ -119,7 +117,7 @@ export const jiraAdapter: TicketSystemAdapter = {
     // 50 per Symphony state is plenty, so we only ever fetch the first page.
     const body = JSON.stringify({
       jql,
-      fields: ['summary', 'description', 'status', 'assignee', 'issuetype', 'parent'],
+      fields: ['summary', 'description', 'status', 'assignee', 'issuetype', 'parent', 'labels'],
       maxResults: 50,
     });
     const res = await jiraRequest(board, '/rest/api/2/search/jql', { method: 'POST', body });
@@ -131,7 +129,7 @@ export const jiraAdapter: TicketSystemAdapter = {
     try {
       const res = await jiraRequest(
         board,
-        `/rest/api/2/issue/${encodeURIComponent(identifier)}?fields=summary,description,status,assignee,issuetype,parent`
+        `/rest/api/2/issue/${encodeURIComponent(identifier)}?fields=summary,description,status,assignee,issuetype,parent,labels`
       );
       const raw = (await res.json()) as JiraIssue;
       return toIssue(board, raw);
