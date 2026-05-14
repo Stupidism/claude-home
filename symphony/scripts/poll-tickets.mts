@@ -110,8 +110,33 @@ interface BoardConfig {
   /** Jira-only: e.g. "https://workstreamhq.atlassian.net". */
   jiraBaseUrl?: string;
   defaultRepo: string;
+  /** Agent runtime to use when a ticket has no `runtime:<name>` label.
+   *  "claude" (default) spawns claude with the existing session/remote-control
+   *  plumbing. "codex" spawns the codex CLI directly without pty/session files. */
+  defaultRuntime?: AgentRuntime;
   repos: RepoConfig[];
   projects: ProjectConfig[];
+}
+
+type AgentRuntime = 'claude' | 'codex';
+
+const RUNTIME_LABEL_PREFIX = 'runtime:';
+
+/** Pick the runtime for a ticket. Resolution order, highest priority first:
+ *    1. ticket label `runtime:<name>` (per-ticket override)
+ *    2. board `defaultRuntime` (per-board override)
+ *    3. global `symphony.json` `defaultRuntime` (per-machine default)
+ *    4. built-in `"claude"`
+ *  Unknown values throw — typos like `runtime:Codex` should not silently fall back. */
+function runtimeFor(ticket: Issue, board: BoardConfig): AgentRuntime {
+  const label = ticket.labels.find((l) => l.toLowerCase().startsWith(RUNTIME_LABEL_PREFIX));
+  const raw = label
+    ? label.slice(RUNTIME_LABEL_PREFIX.length).trim().toLowerCase()
+    : (board.defaultRuntime ?? symphonyConfig.defaultRuntime ?? 'claude');
+  if (raw !== 'claude' && raw !== 'codex') {
+    throw new Error(`[config] Ticket ${ticket.identifier} has unknown runtime ${JSON.stringify(raw)}. Expected "claude" or "codex".`);
+  }
+  return raw;
 }
 
 /** Resolve the adapter for a board. Unknown values are rejected rather than
@@ -137,6 +162,10 @@ interface SymphonyConfig {
   maxConcurrent: number;
   pollIntervalSeconds: number;
   remoteControl: boolean;
+  /** Per-machine default runtime. Personal machines may set `"codex"` here so
+   *  every board without an explicit override prefers codex; a board can still
+   *  pin `"claude"` via its own `defaultRuntime`. */
+  defaultRuntime?: AgentRuntime;
   preferences: {
     personalLanguage: string;
     workLanguage: string;
@@ -1165,6 +1194,8 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
     NEVER_USE_LANGUAGE: symphonyConfig.preferences.neverUseLanguage,
     // Remote control
     REMOTE_CONTROL: String(REMOTE_CONTROL),
+    // Agent runtime — `claude` (default) or `codex`. See runtimeFor().
+    AGENT_RUNTIME: runtimeFor(ticket, board),
   };
 
   const child = child_process.spawn(

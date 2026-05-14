@@ -19,7 +19,15 @@ async function linearQuery<T>(query: string, variables?: Record<string, unknown>
 const ISSUE_FIELDS = `id identifier title description url
     state { id name }
     assignee { id name }
-    project { id name url }`;
+    project { id name url }
+    labels { nodes { name } }`;
+
+type RawLinearIssue = Omit<Issue, 'labels'> & { labels?: { nodes: Array<{ name: string }> } };
+
+function toIssue(raw: RawLinearIssue): Issue {
+  const { labels, ...rest } = raw;
+  return { ...rest, labels: labels?.nodes.map((n) => n.name) ?? [] };
+}
 
 export const linearAdapter: TicketSystemAdapter = {
   async fetchTicketsByState(board, stateKey, assigneeId) {
@@ -27,7 +35,7 @@ export const linearAdapter: TicketSystemAdapter = {
     const filter: Record<string, unknown> = { state: { id: { eq: stateId } } };
     if (assigneeId) filter['assignee'] = { id: { eq: assigneeId } };
 
-    const data = await linearQuery<{ team: { issues: { nodes: Issue[] } } }>(
+    const data = await linearQuery<{ team: { issues: { nodes: RawLinearIssue[] } } }>(
       `query GetTickets($teamId: String!, $filter: IssueFilter) {
         team(id: $teamId) {
           issues(filter: $filter, orderBy: createdAt, first: 50) {
@@ -37,17 +45,17 @@ export const linearAdapter: TicketSystemAdapter = {
       }`,
       { teamId: board.teamId, filter }
     );
-    return data.team.issues.nodes;
+    return data.team.issues.nodes.map(toIssue);
   },
 
   async fetchTicketByIdentifier(_board, identifier) {
-    const data = await linearQuery<{ issue: Issue | null }>(
+    const data = await linearQuery<{ issue: RawLinearIssue | null }>(
       `query GetTicket($identifier: String!) {
         issue(id: $identifier) { ${ISSUE_FIELDS} }
       }`,
       { identifier }
     );
-    return data.issue ?? null;
+    return data.issue ? toIssue(data.issue) : null;
   },
 
   async fetchTicketStateId(_board, identifier) {

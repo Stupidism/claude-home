@@ -18,6 +18,8 @@
 #   STATE_BACKLOG / STATE_TODO / STATE_IN_PROGRESS / STATE_HUMAN_REVIEW /
 #   STATE_IN_REVIEW / STATE_REWORK / STATE_MERGING / STATE_DONE
 #   SYMPHONY_ROOT    — path to ~/symphony
+#   AGENT_RUNTIME    — "claude" (default) or "codex". Selected per-ticket by the
+#                       poller from a `runtime:<name>` label or board defaultRuntime.
 #
 # Usage:
 #   run-ticket.sh <ticket-id> <ticket-title> [ticket-description] [--fresh|--feedback]
@@ -187,6 +189,9 @@ export PERSONAL_PREFERRED_LANGUAGE="${PERSONAL_PREFERRED_LANGUAGE:-Chinese (Simp
 export WORK_PREFERRED_LANGUAGE="${WORK_PREFERRED_LANGUAGE:-English}"
 export NEVER_USE_LANGUAGE="${NEVER_USE_LANGUAGE:-Korean or Japanese}"
 
+AGENT_RUNTIME="${AGENT_RUNTIME:-claude}"
+export AGENT_RUNTIME
+
 case "$FRESH" in
   --fresh)
     export RUN_MODE="fresh start (from origin/${DEFAULT_BRANCH})"
@@ -200,65 +205,76 @@ case "$FRESH" in
     ;;
 esac
 
-# ── Session management ─────────────────────────────────────────────────────────
-
-SESSION_ID_FILE="${WORKTREE_PATH}/.claude-session-id"
-
-# Claude derives the on-disk project dir from the worktree path by replacing
-# every "/" with "-" and prepending "-". The session jsonl lives at
-# ~/.claude/projects/<project-dir>/<session-id>.jsonl. Claude may garbage-collect
-# that jsonl (or the whole project dir) without touching our pointer file, in
-# which case `claude --resume <id>` prints "No conversation found" and exits 0
-# immediately. Detect that case here and fall back to creating a new session.
-CLAUDE_PROJECT_DIR="${HOME}/.claude/projects/$(echo "$WORKTREE_PATH" | tr '/' '-')"
-
-session_jsonl_exists() {
-  local id="$1"
-  [ -f "${CLAUDE_PROJECT_DIR}/${id}.jsonl" ]
-}
-
-START_NEW_SESSION=0
-if [ "$FRESH" = "--fresh" ] || [ ! -f "$SESSION_ID_FILE" ]; then
-  START_NEW_SESSION=1
-else
-  SESSION_ID=$(cat "$SESSION_ID_FILE")
-  if ! session_jsonl_exists "$SESSION_ID"; then
-    echo "[run] Pointer file references session ${SESSION_ID} but ${CLAUDE_PROJECT_DIR}/${SESSION_ID}.jsonl is gone — starting a new session."
-    START_NEW_SESSION=1
-  fi
-fi
-
-if [ "$START_NEW_SESSION" = "1" ]; then
-  SESSION_ID=$(python3 -c "import uuid; print(uuid.uuid4())")
-  echo "$SESSION_ID" > "$SESSION_ID_FILE"
-  SESSION_FLAG="--session-id $SESSION_ID"
-else
-  SESSION_FLAG="--resume $SESSION_ID"
-fi
-
 # ── Spawn agent ────────────────────────────────────────────────────────────────
 
-if [ "${REMOTE_CONTROL:-}" = "true" ]; then
-PROMPT_FILE="$(mktemp /tmp/symphony-prompt-XXXXXX.txt)"
-  printf '%s' "$PROMPT" > "$PROMPT_FILE"
-  python3 "$SYMPHONY_ROOT/scripts/pty-wrapper.py" "$PROMPT_FILE" $SESSION_FLAG
+if [ "$AGENT_RUNTIME" = "codex" ]; then
+  # codex shares session state with the codex desktop app natively, so it
+  # needs neither --remote-control / pty-wrapper nor --session-id / --resume
+  # plumbing. Each invocation is independent; stdio goes to the per-ticket log
+  # file inherited from the parent (poller).
+  CODEX_BIN="${CODEX_BIN:-codex}"
+  CODEX_FLAGS="${CODEX_FLAGS:---dangerously-bypass-approvals-and-sandbox}"
+  echo "[run] Runtime: codex (bin=$CODEX_BIN flags=$CODEX_FLAGS)"
+  # shellcheck disable=SC2086
+  "$CODEX_BIN" exec $CODEX_FLAGS "$PROMPT"
+  AGENT_EXIT=$?
 else
-  SESSION_SLUG="${BRANCH#feat/${TICKET_ID}-}"
-  if echo "$SESSION_FLAG" | grep -q -- '--session-id'; then
-    NAME_FLAG="--name [${TICKET_ID}] ${SESSION_SLUG}"
+  SESSION_ID_FILE="${WORKTREE_PATH}/.claude-session-id"
+
+  # Claude derives the on-disk project dir from the worktree path by replacing
+  # every "/" with "-" and prepending "-". The session jsonl lives at
+  # ~/.claude/projects/<project-dir>/<session-id>.jsonl. Claude may garbage-collect
+  # that jsonl (or the whole project dir) without touching our pointer file, in
+  # which case `claude --resume <id>` prints "No conversation found" and exits 0
+  # immediately. Detect that case here and fall back to creating a new session.
+  CLAUDE_PROJECT_DIR="${HOME}/.claude/projects/$(echo "$WORKTREE_PATH" | tr '/' '-')"
+
+  session_jsonl_exists() {
+    local id="$1"
+    [ -f "${CLAUDE_PROJECT_DIR}/${id}.jsonl" ]
+  }
+
+  START_NEW_SESSION=0
+  if [ "$FRESH" = "--fresh" ] || [ ! -f "$SESSION_ID_FILE" ]; then
+    START_NEW_SESSION=1
   else
-    NAME_FLAG=""
+    SESSION_ID=$(cat "$SESSION_ID_FILE")
+    if ! session_jsonl_exists "$SESSION_ID"; then
+      echo "[run] Pointer file references session ${SESSION_ID} but ${CLAUDE_PROJECT_DIR}/${SESSION_ID}.jsonl is gone — starting a new session."
+      START_NEW_SESSION=1
+    fi
   fi
-  claude --dangerously-skip-permissions $SESSION_FLAG $NAME_FLAG --print "$PROMPT"
+
+  SESSION_ARGS=()
+  if [ "$START_NEW_SESSION" = "1" ]; then
+    SESSION_ID=$(python3 -c "import uuid; print(uuid.uuid4())")
+    echo "$SESSION_ID" > "$SESSION_ID_FILE"
+    SESSION_ARGS=(--session-id "$SESSION_ID")
+  else
+    SESSION_ARGS=(--resume "$SESSION_ID")
+  fi
+
+  if [ "${REMOTE_CONTROL:-}" = "true" ]; then
+    PROMPT_FILE="$(mktemp /tmp/symphony-prompt-XXXXXX.txt)"
+    printf '%s' "$PROMPT" > "$PROMPT_FILE"
+    python3 "$SYMPHONY_ROOT/scripts/pty-wrapper.py" "$PROMPT_FILE" "${SESSION_ARGS[@]}"
+  else
+    NAME_ARGS=()
+    if [ "$START_NEW_SESSION" = "1" ]; then
+      SESSION_SLUG="${BRANCH#feat/${TICKET_ID}-}"
+      NAME_ARGS=(--name "[${TICKET_ID}] ${SESSION_SLUG}")
+    fi
+    claude --dangerously-skip-permissions "${SESSION_ARGS[@]}" "${NAME_ARGS[@]}" --print "$PROMPT"
+  fi
+  AGENT_EXIT=$?
 fi
-CLAUDE_EXIT=$?
 
 echo ""
-if [ $CLAUDE_EXIT -eq 0 ]; then
-  echo "[run] ✓ Claude Code finished: ${TICKET_ID}"
-elif [ $CLAUDE_EXIT -eq 130 ] || [ $CLAUDE_EXIT -eq 143 ]; then
-  echo "[run] ⚠ Claude Code interrupted (signal ${CLAUDE_EXIT}): ${TICKET_ID}" >&2
+if [ $AGENT_EXIT -eq 0 ]; then
+  echo "[run] ✓ ${AGENT_RUNTIME} finished: ${TICKET_ID}"
+elif [ $AGENT_EXIT -eq 130 ] || [ $AGENT_EXIT -eq 143 ]; then
+  echo "[run] ⚠ ${AGENT_RUNTIME} interrupted (signal ${AGENT_EXIT}): ${TICKET_ID}" >&2
 else
-  echo "[run] ✗ Claude Code exited with error (code ${CLAUDE_EXIT}): ${TICKET_ID}" >&2
+  echo "[run] ✗ ${AGENT_RUNTIME} exited with error (code ${AGENT_EXIT}): ${TICKET_ID}" >&2
 fi
-exit $CLAUDE_EXIT
+exit $AGENT_EXIT
