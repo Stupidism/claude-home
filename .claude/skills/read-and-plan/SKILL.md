@@ -47,14 +47,34 @@ Evaluate whether the ticket provides enough information to start implementation.
 
 ## Step 3 — Identify affected repos
 
-Read the board config at `$SYMPHONY_ROOT/config/boards/wor.json` (or the relevant board file). Find the current project in `projects[]` by matching `$TICKET_ID`'s project, then:
+Read the board config at `$SYMPHONY_ROOT/config/boards/<board>.json` (the file matching `$TICKET_ID`'s prefix, e.g. `up.json` for UP-*, `wor.json` for WOR-*). Resolve which `projects[]` entry the ticket belongs to:
+
+- **Jira tickets** (`ticketSystem: "jira"`): the Jira *project key* (e.g. `UP`) is the **team**, not a Symphony project. To pick a Symphony project entry, read the issue's `labels[]` and find the first label of the form `project:<name>`. Match that full label (e.g. `project:symphony`) against `projects[].linearProjectId`. If no `project:*` label is present, the ticket has no project — fall back to `board.defaultRepo`. **Do not match by Jira project key.**
+- **Linear tickets** (`ticketSystem: "linear"`): match the ticket's Linear project UUID against `projects[].linearProjectId`.
+
+Once a project entry is matched (or you've fallen back to `defaultRepo`):
 
 1. Read the **`repos[]` array** on the matched project — each entry has a `hint` that explains when that repo is relevant to a ticket.
 2. Based on the ticket content and each repo's `hint`, decide which repos are in scope.
 3. For each in-scope repo, also read its top-level `description` from the board's `repos[]` array to understand the tech stack and boundaries.
 4. For multi-repo tickets, note which is `primaryRepo` (where the branch lives) and which are secondary.
 
-**If the ticket's project is not in the config** (e.g. `$PROJECT_PATH` is the repo root), treat the current repo as the only affected repo.
+**If the ticket's project is not in the config** (e.g. `$PROJECT_PATH` is the repo root, or no `project:*` label matched), treat the current repo as the only affected repo.
+
+### Step 3a — Worktree-repo sanity check
+
+The poller picks a worktree directory based on its own repo resolution. If that resolution is wrong (e.g. the poller fell back to `defaultRepo` because the `project:*` label wasn't yet mapped in the board config), the current worktree sits inside the wrong repo and any edits you make will land on the wrong codebase.
+
+Compare:
+
+- **Expected repo:** the `primaryRepo` from Step 3 (or `defaultRepo` if no project matched). Look up its `worktreesDir` in `board.repos[]`.
+- **Actual worktree:** the current working directory (`$PWD` / `$WORKTREE_PATH`).
+
+If `$PWD` is not inside the expected repo's `worktreesDir`, **stop immediately** and surface this as a **setup error**:
+
+- Post a comment on the ticket explaining: the resolved repo, the expected `worktreesDir`, the actual worktree path, and that the poller needs to recreate the worktree in the correct repo.
+- Do **not** transition the ticket to Backlog — this is not a missing-requirements problem.
+- Do **not** edit any files. Exit the session.
 
 ## Step 4 — Load project rules
 
