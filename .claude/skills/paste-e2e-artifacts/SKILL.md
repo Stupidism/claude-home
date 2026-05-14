@@ -101,7 +101,7 @@ Append the proof of work block to the existing workpad body (do not replace the 
 
 1. Read the current workpad body (from the comment ID saved earlier)
 2. Append the `### E2E Proof of Work` section before `### Notes`
-3. Update the comment via `commentUpdate` (see `$SKILLS_ROOT/linear/SKILL.md`)
+3. Update the comment via `commentUpdate` (see `$SKILLS_ROOT/ticket/SKILL.md` for the dispatcher; this skill itself is currently Linear-only because Jira's attachment API differs — for Jira workpads, fall back to logging local file paths in the workpad)
 
 ## Notes
 

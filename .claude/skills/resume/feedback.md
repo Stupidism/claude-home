@@ -4,7 +4,9 @@ This ticket was moved back from Human Review / In Review to In Progress. There i
 
 ## 1. Check ticket comments
 
-If `$TICKET_SYSTEM` is `linear`:
+Route by `$TICKET_SYSTEM`. Prefer the matching MCP tools when available — fall back to curl only when they're absent (see `$SKILLS_ROOT/ticket/SKILL.md` for the full dispatcher contract).
+
+### Linear (`$TICKET_SYSTEM=linear`)
 
 ```bash
 curl -s -X POST https://api.linear.app/graphql \
@@ -13,6 +15,24 @@ curl -s -X POST https://api.linear.app/graphql \
   -d '{"query": "{ issue(id: \"$TICKET_ID\") { comments { nodes { body createdAt user { name } } } } }"}' \
   | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); d.data.issue.comments.nodes.sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)).slice(0,5).reverse().forEach(c=>console.log(c.createdAt, c.user?.name??'unknown', c.body))"
 ```
+
+### Jira (`$TICKET_SYSTEM=jira`)
+
+Preferred: `mcp__claude_ai_Atlassian__getJiraIssue` with `issueIdOrKey: $TICKET_ID` — the comments come back inline under `fields.comment.comments`.
+
+Curl fallback:
+
+```bash
+BOARD_FILE="$SYMPHONY_ROOT/config/boards/$(echo "$TICKET_ID" | cut -d- -f1 | tr A-Z a-z).json"
+JIRA_BASE_URL=$(jq -r '.jira.baseUrl' "$BOARD_FILE")
+JIRA_AUTH="Basic $(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64)"
+
+curl -s -H "Authorization: $JIRA_AUTH" -H "Accept: application/json" \
+  "$JIRA_BASE_URL/rest/api/3/issue/$TICKET_ID/comment?maxResults=20&orderBy=-created" \
+  | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); (d.comments||[]).slice(-5).forEach(c=>console.log(c.created, c.author?.displayName??'unknown', JSON.stringify(c.body).slice(0,500)))"
+```
+
+Jira comment bodies come back as ADF JSON — print the raw JSON and grep for the text you care about, or pull `body.content[*].content[*].text`.
 
 
 ## 2. Check GitHub PR comments
