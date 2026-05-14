@@ -6,6 +6,8 @@
   "ticketSystem": "jira",
   "_assigneeIdComment": "Jira accountId of the user who owns this board — overrides symphony.json.assigneeId.",
   "assigneeId": "YOUR_JIRA_ACCOUNT_ID",
+  "_assigneeEmailComment": "Jira account email for the `new-ticket` skill. The mcp-atlassian wrapper silently drops accountId on the assign call, so email is the only working format. Required if you use the skill to create tickets.",
+  "assigneeEmail": "YOUR_JIRA_ACCOUNT_EMAIL",
   "jira": {
     "baseUrl": "https://workstreamhq.atlassian.net",
     "states": {

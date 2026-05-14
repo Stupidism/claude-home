@@ -35,6 +35,7 @@ Pull these fields:
 | `ticketPrefix` | `boards/<x>.json` | Jira `project_key` (uppercase) |
 | `teamId` | `boards/<x>.json` (Linear) | Linear `teamId` |
 | `assigneeId` | `boards/<x>.json` → fallback `symphony.json` | who to assign to so the poller actually picks it up |
+| `assigneeEmail` | `boards/<x>.json` (Jira only) | the **email** to pass to `jira_update_issue` — see Step 4 |
 | `states.todo` | `boards/<x>.json` (Linear UUID) / `"To Do"` (Jira name) | initial state |
 
 ### 3. Create the ticket
@@ -69,15 +70,20 @@ mcp__linear-server__create_issue
 Always do this immediately after creation:
 
 ```text
-# Jira: re-assign by email. The Jira Cloud API technically accepts accountId,
-# but the mcp-atlassian wrapper returns "Issue updated successfully" yet leaves
-# the issue Unassigned for both raw accountIds and the "accountid:<id>" prefix
-# form — verified empirically on 2026-05-13. Email is the only format that has
-# ever produced a non-empty `assignee` on read-back. Do NOT "fix" this back to
-# accountId without re-verifying via jira_get_issue.
+# Jira: re-assign by email read from board config's `assigneeEmail` field.
+# The Jira Cloud API technically accepts accountId, but the mcp-atlassian
+# wrapper returns "Issue updated successfully" yet leaves the issue Unassigned
+# for both raw accountIds and the "accountid:<id>" prefix form — verified
+# empirically on 2026-05-13. Email is the only format that has ever produced
+# a non-empty `assignee` on read-back. Do NOT "fix" this back to accountId
+# without re-verifying via jira_get_issue.
+#
+# If `assigneeEmail` is missing from board config, stop and ask the user to
+# add it — do NOT fall back to conversation-context email (CLAUDE.md
+# userEmail), since that is per-machine and not a reliable source of truth.
 mcp__mcp-atlassian__jira_update_issue
   issue_key = "<NEW_KEY>"
-  fields    = { "assignee": "<user-email>" }
+  fields    = { "assignee": "<assigneeEmail from board config>" }
 
 mcp__mcp-atlassian__jira_get_issue
   issue_key = "<NEW_KEY>"
