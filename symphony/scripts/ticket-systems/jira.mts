@@ -103,6 +103,7 @@ function toIssue(board: BoardLike, raw: JiraIssue): Issue {
     assignee: raw.fields.assignee
       ? { id: raw.fields.assignee.accountId, name: raw.fields.assignee.displayName }
       : null,
+    labels: raw.fields.labels ?? [],
   };
 }
 

@@ -21,6 +21,9 @@ export interface Issue {
   project: { id: string; name: string; url: string | null } | null;
   state: { id: string; name: string };
   assignee: { id: string; name: string } | null;
+  /** All labels attached to the ticket. Used by the poller for routing
+   *  (e.g. `project:<slug>`, `runtime:codex`). May be empty. */
+  labels: string[];
 }
 
 export interface StateKeys {

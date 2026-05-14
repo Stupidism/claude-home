@@ -57,6 +57,7 @@ function stubTicket(prefix: string, n: number, stateKey: StateKey, board: BoardR
     project: null,
     state: { id: board.states[stateKey], name: stateKey },
     assignee: null,
+    labels: [],
   };
 }
 

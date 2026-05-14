@@ -91,6 +91,7 @@ Each board file (`config/boards/*.json`) defines:
 | `ticketSystem` | `linear` or `jira` |
 | `states` | Map of state names → Linear state UUIDs |
 | `defaultRepo` | Fallback repo name when ticket has no project |
+| `defaultRuntime` | `claude` (default) or `codex`. Overridden per-ticket by `runtime:<name>` label. |
 | `repos[]` | All git repos this board can touch (path, github, setup config) |
 | `projects[]` | Linear projects → repo mapping, with per-repo `hint` for the agent |
 
@@ -115,6 +116,32 @@ Each board file (`config/boards/*.json`) defines:
 | `SKILLS_ROOT` | `~/.claude/skills` |
 | `STATE_*` | All Linear state UUIDs from the board config |
 | `LINEAR_API_KEY` | From `secrets.env` |
+
+## Choosing the agent runtime
+
+Symphony spawns one of two agent CLIs per ticket:
+
+| Runtime | When to use | How it spawns |
+|---------|-------------|---------------|
+| `claude` (default) | Most tickets. Required for anything that depends on claude.ai/agents session visibility, hooks, or the existing skills under `~/.claude/skills/`. | Via `pty-wrapper.py` when `remoteControl: true`, otherwise direct `claude --print`. Manages `.claude-session-id` for resume. |
+| `codex` | Fallback when claude is unhealthy (rate limit pause, stale session id loops). Independent invocations — no resume, no remote-control, no pty. | Direct `codex exec` with stdio inherited from the poller's per-ticket log. Skills resolved by codex itself under `~/.codex/skills/`. |
+
+Resolution order (highest priority first):
+
+1. **Per ticket** — `runtime:codex` label (Jira label or Linear label) on the ticket.
+2. **Per board** — `defaultRuntime: "codex"` in `config/boards/*.json`.
+3. **Per machine** — `defaultRuntime: "codex"` in `config/symphony.json`. Useful for personal machines that should prefer codex when boards don't override.
+4. Built-in `"claude"`.
+
+Codex does not need `--remote-control` or a session-id file: the codex CLI shares state with the codex desktop app natively, and each invocation is independent. The poller pipes codex stdout/stderr into the same per-ticket log file (`logs/symphony-<ticket>.log`) that claude uses, so the dashboard tail and error surfacing work identically.
+
+Override the codex binary or flags from the environment if needed:
+
+```bash
+CODEX_BIN=/opt/homebrew/bin/codex \
+CODEX_FLAGS='--dangerously-bypass-approvals-and-sandbox' \
+node --experimental-strip-types scripts/poll-tickets.mts
+```
 
 ## Troubleshooting
 
