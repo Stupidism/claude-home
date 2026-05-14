@@ -9,7 +9,7 @@ Send a PR review notification to the team's Slack channel.
 
 ## Prerequisite: Slack MCP
 
-This skill requires the Slack MCP server to be connected. If Slack tools are not available (check for `mcp__plugin_slack_slack__slack_send_message`), tell the user:
+This skill requires the Slack MCP server to be connected. If Slack tools are not available (check for an `mcp__*slack*__slack_send_message` tool name), tell the user:
 
 "The Slack MCP is not connected. Please connect it and try again, or copy the message below and send it manually."
 
@@ -17,48 +17,54 @@ Then compose and display the message for the user to copy.
 
 ## Gathering Context
 
-1. Read `$SKILLS_ROOT/prime-project/session-state.md` for:
-   - **Ticket ID**
-   - **Project name** — to load the project config
+1. Identify the **ticket ID** (e.g. `WOR-265`, `UP-761`) and **board key** (`WOR`, `UP`) from the branch name or the ticket the agent is currently working on.
 
-2. Read `$SKILLS_ROOT/prime-project/project-configs/{project-name}.json` for:
-   - **slack.channelName** — the Slack channel to post in
-   - **slack.messageTemplate** — the message template
+2. Load the resolved Slack config (UP-761 schema). Resolution order — later overrides earlier:
+
+    1. `~/symphony/config/symphony.json` → `.slack`
+    2. `~/symphony/config/boards/<board>.json` → `.slack`
+    3. The matching `projects[*].slack` block, if the ticket's project entry has one
+
+   Read keys from the resolved object:
+
+    - `codeReviewChannel.id` — Slack channel ID (e.g. `C09EYTC2GLP`) to post the message in
+    - `codeReviewChannel.name` — channel name, used only for fallback search if `id` is empty
+    - `crossPost` — optional `{ name, id }` for a cross-post target
+    - `reviewers` — map of `nickname → Slack user ID` for `@`-mentioning coworkers
+
+   If `codeReviewChannel.id` is empty and `name` is set, search by name with `slack_search_channels` and use the first match. If both are empty, stop and ask the user which channel to post in.
 
 3. Get the PR URL from `gh pr view --json url -q .url` or ask the user.
 
 ## Composing the Message
 
-Use the `messageTemplate` from the project config. The template already contains the correct Slack subteam mention format (`<!subteam^ID>`), so use it as-is — do **not** replace it with plain text like `@groupname`.
+Default template (use unless the user gives a different one):
+
+```
+<{pr_url}|PR #{pr_number}> {pr_action} {ticket_id} — {pr_description}. Ready for review.
+```
 
 **Template variables:**
 
 - `{pr_url}` — The PR URL
-- `{pr_description}` — A short description like "to add processing period support" or "to fix overtime calculation"
+- `{pr_number}` — Extracted from the PR URL
+- `{pr_description}` — A short description like "add processing period support" or "fix overtime calculation"
 - `{pr_action}` — One of: `fixes`, `closes`, `implements` (ask user or infer from commit type)
-- `{ticket_id}` — The ticket ID (e.g. `TEAM-1234`)
+- `{ticket_id}` — The ticket ID (e.g. `WOR-265`, `UP-761`)
 
-**Ask the user** to provide or confirm the `pr_description` and `pr_action`.
+If the user names specific reviewers ("ping wenkang and smith"), look up each nickname in `slack.reviewers` and prepend their `<@USERID>` mentions. Names not in the map: warn and ask the user for the Slack user ID before sending.
+
+**Ask the user** to confirm `pr_description` and `pr_action` before sending.
 
 ## Sending
 
-1. **Show the composed message** to the user and ask for confirmation before sending
-2. Use `slack.channelId` from the project config if available, otherwise search by `channelName` using `slack_search_channels`
-3. Send via `slack_send_message` to the channel
+1. **Show the composed message** to the user and ask for confirmation before sending.
+2. Send via `slack_send_message` to `codeReviewChannel.id`.
 
 ## Cross-Posting
 
-If the project config has `slack.crossPost`, **ask the user** if they also want to post to that channel (e.g. `#e-code-review`). If yes, send the same message to the cross-post channel using its `channelId`.
+If the resolved config has `slack.crossPost.id`, **ask the user** whether to also post to that channel. If yes, send the same message there.
 
 ## Post-Send
 
-- Confirm the message was sent (and cross-posted if applicable)
-- **Clear session state** — reset `$SKILLS_ROOT/prime-project/session-state.md` to the empty template:
-
-```markdown
-# Session State
-
-<!-- Auto-updated by skills. Do not edit manually. Do not commit. -->
-```
-
-- Tell the user: "Review notification sent. Session complete."
+Confirm the message was sent (and cross-posted if applicable). Tell the user: "Review notification sent."

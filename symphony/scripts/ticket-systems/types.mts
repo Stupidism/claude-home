@@ -4,6 +4,10 @@
  * Symphony was originally Linear-only. The adapter layer lets the poller work
  * against any ticket backend (Linear today, Jira as of WOR-138) by dispatching
  * through a small, stable interface.
+ *
+ * Board configs are grouped by external system (UP-761): Linear-specific
+ * fields live under `linear`, Jira-specific fields under `jira`. Adapters
+ * read only from their own namespace.
  */
 
 export interface Issue {
@@ -32,17 +36,31 @@ export interface StateKeys {
 
 export type StateKey = keyof StateKeys;
 
+/** Linear-system config block on a board file. */
+export interface BoardLinearConfig {
+  /** Linear state UUIDs keyed by Symphony state. */
+  states: StateKeys;
+}
+
+/** Jira-system config block on a board file. */
+export interface BoardJiraConfig {
+  /** e.g. "https://workstreamhq.atlassian.net". */
+  baseUrl: string;
+  /** Jira status *names* keyed by Symphony state. Jira boards compare against names. */
+  states: StateKeys;
+  /** Workflow transition IDs keyed by Symphony state. */
+  transitions: Partial<Record<StateKey, string>>;
+}
+
 export interface BoardLike {
   name: string;
   ticketPrefix: string;
   /** Missing is allowed; the poller defaults to "linear" via `ticketSystemFor`. */
   ticketSystem?: 'linear' | 'jira';
+  /** Linear: team UUID. Jira: project key (e.g. "UP"). */
   teamId: string;
-  states: StateKeys;
-  /** Jira-only. Transition IDs keyed by the same Symphony state keys. */
-  transitions?: Partial<Record<StateKey, string>>;
-  /** Jira-only. e.g. "https://workstreamhq.atlassian.net". */
-  jiraBaseUrl?: string;
+  linear?: BoardLinearConfig;
+  jira?: BoardJiraConfig;
 }
 
 export interface TicketSystemAdapter {

@@ -1,19 +1,26 @@
 /**
  * Jira adapter — Jira REST v2 (plain-text description/comments; v3 returns ADF JSON).
  *
- * Board config for Jira boards:
+ * Board config for Jira boards (UP-761 schema):
  *   "ticketSystem": "jira",
  *   "teamId": "UP",                // Jira project key
- *   "jiraBaseUrl": "https://workstreamhq.atlassian.net",
- *   "states":      { todo: "To Do", inProgress: "In Progress", done: "Done", ... },
- *   "transitions": { todo: "11",    inProgress: "21",           done: "31",   ... }
+ *   "jira": {
+ *     "baseUrl":     "https://workstreamhq.atlassian.net",
+ *     "states":      { todo: "To Do", inProgress: "In Progress", done: "Done", ... },
+ *     "transitions": { todo: "11",    inProgress: "21",           done: "31",   ... }
+ *   }
  *
  * Secrets (read from the process environment):
  *   JIRA_EMAIL      — Atlassian account email
  *   JIRA_API_TOKEN  — https://id.atlassian.com/manage-profile/security/api-tokens
  */
 
-import type { BoardLike, Issue, StateKey, TicketSystemAdapter } from './types.mts';
+import type { BoardJiraConfig, BoardLike, Issue, StateKey, TicketSystemAdapter } from './types.mts';
+
+function jiraOf(board: BoardLike): BoardJiraConfig {
+  if (!board.jira) throw new Error(`[jira] Board "${board.name}" is missing the "jira" config block`);
+  return board.jira;
+}
 
 interface JiraIssue {
   id: string;
@@ -45,8 +52,8 @@ function authHeader(): string {
 }
 
 async function jiraRequest(board: BoardLike, pathAndQuery: string, init?: RequestInit): Promise<Response> {
-  const base = (board.jiraBaseUrl ?? '').replace(/\/$/, '');
-  if (!base) throw new Error(`[jira] Board "${board.name}" is missing jiraBaseUrl`);
+  const base = jiraOf(board).baseUrl.replace(/\/$/, '');
+  if (!base) throw new Error(`[jira] Board "${board.name}" is missing jira.baseUrl`);
   const res = await fetch(`${base}${pathAndQuery}`, {
     ...init,
     headers: {
@@ -70,7 +77,8 @@ async function jiraRequest(board: BoardLike, pathAndQuery: string, init?: Reques
  * To pick a Symphony project entry, we read the issue's `project:<slug>` label.
  * If none exists, project = null (poller falls back to board.defaultRepo).
  *
- * Board configs route by label value, e.g. `"linearProjectId": "project:rebuild-scaffold"`.
+ * Board configs route by label value via the per-project `jira.projectLabel`
+ * entry (e.g. `"jira": { "projectLabel": "project:symphony" }`).
  */
 function resolveProject(raw: JiraIssue): { id: string; name: string; url: string | null } | null {
   const labels = raw.fields.labels ?? [];
@@ -80,7 +88,7 @@ function resolveProject(raw: JiraIssue): { id: string; name: string; url: string
 }
 
 function toIssue(board: BoardLike, raw: JiraIssue): Issue {
-  const base = (board.jiraBaseUrl ?? '').replace(/\/$/, '');
+  const base = jiraOf(board).baseUrl.replace(/\/$/, '');
   return {
     id: raw.id,
     identifier: raw.key,
@@ -104,7 +112,7 @@ function escapeJql(value: string): string {
 
 export const jiraAdapter: TicketSystemAdapter = {
   async fetchTicketsByState(board, stateKey: StateKey, assigneeId) {
-    const statusName = board.states[stateKey];
+    const statusName = jiraOf(board).states[stateKey];
     const clauses = [
       `project = "${escapeJql(board.teamId)}"`,
       `status = "${escapeJql(statusName)}"`,
@@ -146,7 +154,7 @@ export const jiraAdapter: TicketSystemAdapter = {
         `/rest/api/2/issue/${encodeURIComponent(identifier)}?fields=status`
       );
       const raw = (await res.json()) as { fields: { status: { name: string } } };
-      // Return the status name so it compares equal to board.states.*.
+      // Return the status name so it compares equal to board.jira.states.*.
       return raw.fields?.status?.name ?? null;
     } catch (err) {
       if (String(err).includes('404')) return null;
@@ -155,9 +163,9 @@ export const jiraAdapter: TicketSystemAdapter = {
   },
 
   async moveToState(board, issueId, stateKey) {
-    const transitionId = board.transitions?.[stateKey];
+    const transitionId = jiraOf(board).transitions[stateKey];
     if (!transitionId) {
-      throw new Error(`[jira] Board "${board.name}" is missing transitions.${stateKey}`);
+      throw new Error(`[jira] Board "${board.name}" is missing jira.transitions.${stateKey}`);
     }
     await jiraRequest(board, `/rest/api/2/issue/${encodeURIComponent(issueId)}/transitions`, {
       method: 'POST',
