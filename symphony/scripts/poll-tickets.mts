@@ -1667,6 +1667,15 @@ async function poll(): Promise<void> {
     if (lastKnownState.get(ticket.identifier) !== 'Todo') continue; // skip inProgress entries
     if (runningAgents.has(ticket.identifier)) continue;
     if (runningAgents.size >= MAX_CONCURRENT) break;
+    // Validate runtime before claiming the ticket. If we waited until spawnAgent
+    // throws, handleTodo would have already moved it to In Progress, leaving a
+    // typo'd ticket stuck with no running agent.
+    try {
+      runtimeFor(ticket, board);
+    } catch (err) {
+      log(chalk.red(`[${timestamp()}] ✗ Skipping ${ticket.identifier}: ${err instanceof Error ? err.message : err}`));
+      continue;
+    }
     const deps: StateMachineDeps<BoardConfig> = {
       moveToInProgress, moveToHumanReview, moveToInReview, moveToTodo, moveToDone,
       spawnAgent, resetReworkTicket, removeWorktree, areAllPRsMerged,
