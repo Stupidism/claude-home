@@ -8,5 +8,13 @@
     "personalLanguage": "English",
     "workLanguage": "English",
     "neverUseLanguage": ""
+  },
+  "_slackComment": "Global Slack defaults. Deep-merged with board-, project-, and repo-level overrides. Skills like notify-review look up codeReviewChannel + reviewers from here.",
+  "slack": {
+    "codeReviewChannel": {
+      "name": "#YOUR_REVIEW_CHANNEL",
+      "id": "YOUR_SLACK_CHANNEL_ID"
+    },
+    "reviewers": {}
   }
 }

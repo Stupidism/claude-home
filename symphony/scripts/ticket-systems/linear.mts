@@ -2,7 +2,12 @@
  * Linear adapter — wraps Linear GraphQL into the TicketSystemAdapter shape.
  */
 
-import type { BoardLike, Issue, StateKey, TicketSystemAdapter } from './types.mts';
+import type { BoardLike, BoardLinearConfig, Issue, StateKey, TicketSystemAdapter } from './types.mts';
+
+function linearOf(board: BoardLike): BoardLinearConfig {
+  if (!board.linear) throw new Error(`[linear] Board "${board.name}" is missing the "linear" config block`);
+  return board.linear;
+}
 
 async function linearQuery<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
   const apiKey = process.env['LINEAR_API_KEY'] ?? '';
@@ -23,7 +28,7 @@ const ISSUE_FIELDS = `id identifier title description url
 
 export const linearAdapter: TicketSystemAdapter = {
   async fetchTicketsByState(board, stateKey, assigneeId) {
-    const stateId = board.states[stateKey];
+    const stateId = linearOf(board).states[stateKey];
     const filter: Record<string, unknown> = { state: { id: { eq: stateId } } };
     if (assigneeId) filter['assignee'] = { id: { eq: assigneeId } };
 
@@ -65,7 +70,7 @@ export const linearAdapter: TicketSystemAdapter = {
       `mutation UpdateState($id: String!, $stateId: String!) {
         issueUpdate(id: $id, input: { stateId: $stateId }) { success }
       }`,
-      { id: issueId, stateId: board.states[stateKey] }
+      { id: issueId, stateId: linearOf(board).states[stateKey] }
     );
   },
 

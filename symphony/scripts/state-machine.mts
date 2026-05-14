@@ -34,11 +34,14 @@ import type { Issue, StateKey } from './ticket-systems/types.mts';
 
 export type SpawnMode = 'fresh' | 'continue' | 'feedback';
 
-/** Any object that quacks like a BoardConfig. Kept structural so tests can pass stubs. */
+/** Any object that quacks like a BoardConfig. Kept structural so tests can pass stubs.
+ *  `states` is unused inside the state machine itself — tests stub it for ticket
+ *  construction — so it stays optional to fit the post-UP-761 namespaced
+ *  BoardConfig (where state IDs live under `linear.states` / `jira.states`). */
 export interface BoardRef {
   name: string;
   ticketPrefix: string;
-  states: Record<StateKey, string>;
+  states?: Record<StateKey, string>;
 }
 
 /**

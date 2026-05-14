@@ -29,7 +29,14 @@ import {
 } from './html-dashboard.mts';
 import { linearAdapter } from './ticket-systems/linear.mts';
 import { jiraAdapter } from './ticket-systems/jira.mts';
-import type { Issue, StateKey, TicketSystemAdapter } from './ticket-systems/types.mts';
+import type {
+  BoardJiraConfig,
+  BoardLinearConfig,
+  Issue,
+  StateKey,
+  StateKeys,
+  TicketSystemAdapter,
+} from './ticket-systems/types.mts';
 import {
   processTicket,
   AI_REVIEW_LOCK_PREFIX,
@@ -50,6 +57,22 @@ const HTML_DASHBOARD_FILE = path.join(os.tmpdir(), 'symphony-dashboard.html');
 
 // ── Config types ──────────────────────────────────────────────────────────────
 
+/** Slack-system config block. Appears at any level (global, board, project, repo)
+ *  and is deep-merged top-down by `resolveConfig`. */
+interface SlackConfig {
+  /** Channel for PR review notifications (id is the Slack channel id like "C09..."). */
+  codeReviewChannel?: { name: string; id: string };
+  /** Optional cross-post target (e.g. team-wide #e-code-review). */
+  crossPost?: { name: string; id: string };
+  /** Nickname → Slack user ID. Used by skills like notify-review to @-mention
+   *  reviewers without searching Slack each time. */
+  reviewers?: Record<string, string>;
+  /** Comment to post on a PR to trigger an external AI review bot.
+   *  When set, the poller posts this instead of having Claude review the diff itself.
+   *  If absent (resolved to undefined), AI review is skipped. */
+  codeReviewComment?: string;
+}
+
 interface RepoConfig {
   name: string;
   path: string;
@@ -57,9 +80,8 @@ interface RepoConfig {
   defaultBranch: string;
   github: string;
   isMono: boolean;
-  /** Per-repo AI review trigger comment. Overrides board-level code-review-comment.
-   *  Set to empty string "" to disable review for this repo specifically. */
-  'code-review-comment'?: string;
+  /** Per-repo overrides — deep-merged on top of board.slack. */
+  slack?: SlackConfig;
   /** Sentry project slug (lowercase) for tickets created by the Sentry-Linear /
    *  Sentry-Jira integrations. When unset, the repo name is used. */
   sentryProject?: string;
@@ -71,10 +93,17 @@ interface RepoConfig {
 }
 
 interface ProjectConfig {
-  linearProjectId: string;
   name: string;
   primaryRepo: string;
   repos: Array<{ name: string; path: string }>;
+  /** Per-project Linear overrides. `projectId` is the Linear project UUID and
+   *  is what the poller matches `ticket.project.id` against on Linear boards. */
+  linear?: { projectId?: string };
+  /** Per-project Jira overrides. `projectLabel` is the Jira label (e.g.
+   *  `project:symphony`) that routes a ticket to this Symphony project. */
+  jira?: { projectLabel?: string };
+  /** Per-project Slack overrides — deep-merged on top of board.slack. */
+  slack?: SlackConfig;
 }
 
 type TicketSystem = 'linear' | 'jira';
@@ -91,24 +120,12 @@ interface BoardConfig {
    *  only makes sense if every board shares the same backend. Mixed Linear+Jira
    *  configs must set this explicitly on at least the Jira board(s). */
   assigneeId?: string;
-  /** Optional comment to post on a PR to trigger an external AI review bot.
-   *  When set, the poller posts this comment instead of having Claude review the diff itself.
-   *  If absent, AI review is skipped entirely for this board. */
-  'code-review-comment'?: string;
-  states: {
-    backlog: string;
-    todo: string;
-    inProgress: string;
-    humanReview: string;
-    inReview: string;
-    rework: string;
-    merging: string;
-    done: string;
-  };
-  /** Jira-only: transition IDs for moving into each Symphony state. */
-  transitions?: Partial<Record<StateKey, string>>;
-  /** Jira-only: e.g. "https://workstreamhq.atlassian.net". */
-  jiraBaseUrl?: string;
+  /** Linear-system block (required on Linear boards). */
+  linear?: BoardLinearConfig;
+  /** Jira-system block (required on Jira boards). */
+  jira?: BoardJiraConfig;
+  /** Board-level Slack overrides — deep-merged on top of global symphony.slack. */
+  slack?: SlackConfig;
   defaultRepo: string;
   repos: RepoConfig[];
   projects: ProjectConfig[];
@@ -142,6 +159,61 @@ interface SymphonyConfig {
     workLanguage: string;
     neverUseLanguage: string;
   };
+  /** Global Slack defaults — deep-merged into every board's `slack` block. */
+  slack?: SlackConfig;
+}
+
+/** Active state map for a board: the system block whose `states` field the
+ *  poller compares ticket state IDs against. Throws if the board is missing
+ *  the namespace its `ticketSystem` declares. */
+function statesFor(board: BoardConfig): StateKeys {
+  const system = ticketSystemFor(board);
+  if (system === 'jira') {
+    if (!board.jira) throw new Error(`[config] Jira board "${board.name}" is missing the "jira" config block`);
+    return board.jira.states;
+  }
+  if (!board.linear) throw new Error(`[config] Linear board "${board.name}" is missing the "linear" config block`);
+  return board.linear.states;
+}
+
+/** Identifier used to match a Linear ticket's project / Jira label against
+ *  a Symphony project entry. Linear projects use UUIDs; Jira tickets use
+ *  the `project:<slug>` label (resolved by the Jira adapter into `ticket.project.id`). */
+function projectKeyFor(board: BoardConfig, project: ProjectConfig): string | undefined {
+  return ticketSystemFor(board) === 'jira' ? project.jira?.projectLabel : project.linear?.projectId;
+}
+
+/** Deep-merge plain objects. Arrays and primitives are replaced wholesale by
+ *  later sources; nested plain objects are merged key-by-key. Used by
+ *  `resolveSlack` to compose global → board → project → repo overrides. */
+function deepMerge<T extends Record<string, unknown>>(...sources: (Partial<T> | undefined)[]): T {
+  const out: Record<string, unknown> = {};
+  for (const src of sources) {
+    if (!src) continue;
+    for (const [key, value] of Object.entries(src)) {
+      const prev = out[key];
+      if (
+        value && typeof value === 'object' && !Array.isArray(value) &&
+        prev && typeof prev === 'object' && !Array.isArray(prev)
+      ) {
+        out[key] = deepMerge(prev as Record<string, unknown>, value as Record<string, unknown>);
+      } else if (value !== undefined) {
+        out[key] = value;
+      }
+    }
+  }
+  return out as T;
+}
+
+/** Resolve effective Slack config for a (board, project?, repo?) tuple by
+ *  deep-merging global → board → project → repo overrides. */
+function resolveSlack(
+  symphony: SymphonyConfig,
+  board: BoardConfig,
+  project?: ProjectConfig,
+  repo?: RepoConfig,
+): SlackConfig {
+  return deepMerge<SlackConfig>(symphony.slack, board.slack, project?.slack, repo?.slack);
 }
 
 // ── Load config ───────────────────────────────────────────────────────────────
@@ -239,7 +311,7 @@ const boards: BoardConfig[] = boardFiles.map((f) =>
 let lastDashboardLines = 0;
 syncTrustedFolders(boards);
 
-// Build lookup: linearProjectId → { project, repo }
+// Build lookup: project key (Linear projectId / Jira projectLabel) → { project, repo }
 interface ProjectResolvedConfig {
   project: ProjectConfig;
   primaryRepo: RepoConfig;
@@ -255,7 +327,12 @@ for (const board of boards) {
       console.warn(chalk.yellow(`[config] Project "${project.name}" references unknown repo "${project.primaryRepo}" in board "${board.name}"`));
       continue;
     }
-    projectMap.set(project.linearProjectId, { project, primaryRepo, board });
+    const key = projectKeyFor(board, project);
+    if (!key) {
+      console.warn(chalk.yellow(`[config] Project "${project.name}" on board "${board.name}" is missing ${ticketSystemFor(board) === 'jira' ? 'jira.projectLabel' : 'linear.projectId'}`));
+      continue;
+    }
+    projectMap.set(key, { project, primaryRepo, board });
   }
 }
 
@@ -295,8 +372,8 @@ if (hasJiraBoard) {
     process.exit(1);
   }
   for (const b of boards.filter((b) => ticketSystemFor(b) === 'jira')) {
-    if (!b.jiraBaseUrl) {
-      console.error(chalk.red(`ERROR: Jira board "${b.name}" is missing "jiraBaseUrl" (e.g. "https://your-org.atlassian.net")`));
+    if (!b.jira?.baseUrl) {
+      console.error(chalk.red(`ERROR: Jira board "${b.name}" is missing "jira.baseUrl" (e.g. "https://your-org.atlassian.net")`));
       process.exit(1);
     }
   }
@@ -384,7 +461,7 @@ function isEligible(ticket: Issue, board: BoardConfig): boolean {
   // (Jira boards usually don't — they fall back to defaultRepo).
   if (!ticket.project) return true;
   if (!board.projects?.length) return true;
-  return board.projects.some((p) => p.linearProjectId === ticket.project!.id);
+  return board.projects.some((p) => projectKeyFor(board, p) === ticket.project!.id);
 }
 
 // ── State transitions ─────────────────────────────────────────────────────────
@@ -860,7 +937,7 @@ async function forceResumeTicket(identifier: string): Promise<void> {
   failureCounts.delete(upper);
 
   // Move to In Progress if not already there
-  if (ticket.state.id !== board.states.inProgress) {
+  if (ticket.state.id !== statesFor(board).inProgress) {
     try {
       await moveToInProgress(board, ticket.id, ticket.identifier);
     } catch (err) {
@@ -1147,14 +1224,14 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
     SETUP_INSTALL_COMMAND: repo.setup?.installCommand ?? '',
     SETUP_INSTALL_CHECK: repo.setup?.installCheck ?? '',
     // Board state IDs
-    STATE_BACKLOG: board.states.backlog,
-    STATE_TODO: board.states.todo,
-    STATE_IN_PROGRESS: board.states.inProgress,
-    STATE_HUMAN_REVIEW: board.states.humanReview,
-    STATE_IN_REVIEW: board.states.inReview,
-    STATE_REWORK: board.states.rework,
-    STATE_MERGING: board.states.merging,
-    STATE_DONE: board.states.done,
+    STATE_BACKLOG: statesFor(board).backlog,
+    STATE_TODO: statesFor(board).todo,
+    STATE_IN_PROGRESS: statesFor(board).inProgress,
+    STATE_HUMAN_REVIEW: statesFor(board).humanReview,
+    STATE_IN_REVIEW: statesFor(board).inReview,
+    STATE_REWORK: statesFor(board).rework,
+    STATE_MERGING: statesFor(board).merging,
+    STATE_DONE: statesFor(board).done,
     // Ticket system
     TICKET_SYSTEM: ticketSystemFor(board),
     // Symphony root
@@ -1292,7 +1369,8 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
         // the instant it exits.
         const guardedAgent = agent;
         (async () => {
-          const owned = new Set([guardedAgent.board.states.todo, guardedAgent.board.states.inProgress]);
+          const ownedStates = statesFor(guardedAgent.board);
+          const owned = new Set([ownedStates.todo, ownedStates.inProgress]);
           let stateId: string | null;
           try {
             stateId = await fetchTicketStateId(guardedAgent.board, ticket.identifier);
@@ -1394,10 +1472,9 @@ function spawnAIReview(issue: Issue, board: BoardConfig, prUrl: string): void {
   const prNumber = prUrl.match(/\/pull\/(\d+)/)?.[1];
   if (!prNumber) return;
   const repoConfig = resolveRepo(issue, board);
-  // Repo-level override takes precedence; fall back to board-level default
-  const codeReviewComment = 'code-review-comment' in repoConfig
-    ? repoConfig['code-review-comment']
-    : board['code-review-comment'];
+  // Resolved via global → board → repo deep-merge (UP-761). Repo-level
+  // overrides win; an empty string disables AI review for this repo specifically.
+  const codeReviewComment = resolveSlack(symphonyConfig, board, undefined, repoConfig).codeReviewComment;
   if (!codeReviewComment) return; // no review configured for this repo/board — skip
   const repoPath = repoConfig.path.replace(/^~/, process.env['HOME'] ?? '~');
 
@@ -1478,7 +1555,7 @@ async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
 
     try {
       const stateId = await fetchTicketStateId(board, identifier);
-      if (stateId === board.states.done) {
+      if (stateId === statesFor(board).done) {
         log(chalk.dim(`[${timestamp()}] ⏹ Killing orphaned agent for ${identifier} (Done, PID ${pid})`));
         try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
         fs.rmSync(filePath, { force: true });

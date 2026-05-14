@@ -4,15 +4,17 @@
   "name": "YourTeam",
   "ticketPrefix": "TEAM",
   "ticketSystem": "linear",
-  "states": {
-    "backlog":     "YOUR_BACKLOG_STATE_UUID",
-    "todo":        "YOUR_TODO_STATE_UUID",
-    "inProgress":  "YOUR_IN_PROGRESS_STATE_UUID",
-    "humanReview": "YOUR_HUMAN_REVIEW_STATE_UUID",
-    "inReview":    "YOUR_IN_REVIEW_STATE_UUID",
-    "rework":      "YOUR_REWORK_STATE_UUID",
-    "merging":     "YOUR_MERGING_STATE_UUID",
-    "done":        "YOUR_DONE_STATE_UUID"
+  "linear": {
+    "states": {
+      "backlog":     "YOUR_BACKLOG_STATE_UUID",
+      "todo":        "YOUR_TODO_STATE_UUID",
+      "inProgress":  "YOUR_IN_PROGRESS_STATE_UUID",
+      "humanReview": "YOUR_HUMAN_REVIEW_STATE_UUID",
+      "inReview":    "YOUR_IN_REVIEW_STATE_UUID",
+      "rework":      "YOUR_REWORK_STATE_UUID",
+      "merging":     "YOUR_MERGING_STATE_UUID",
+      "done":        "YOUR_DONE_STATE_UUID"
+    }
   },
   "defaultRepo": "claude-home",
   "repos": [
@@ -24,7 +26,9 @@
       "defaultBranch": "main",
       "github": "YOUR_USERNAME/claude-home",
       "isMono": false,
-      "code-review-comment": "",
+      "slack": {
+        "codeReviewComment": ""
+      },
       "setup": {
         "symlinkNodeModules": false,
         "installCommand": "cd ~/symphony && npm install",
@@ -34,9 +38,11 @@
   ],
   "projects": [
     {
-      "linearProjectId": "YOUR_SYMPHONY_PROJECT_UUID",
       "name": "Symphony",
       "primaryRepo": "claude-home",
+      "linear": {
+        "projectId": "YOUR_SYMPHONY_PROJECT_UUID"
+      },
       "repos": [
         {
           "name": "claude-home",

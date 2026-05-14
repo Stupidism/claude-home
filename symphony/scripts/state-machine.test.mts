@@ -35,7 +35,14 @@ function loadBoards(): BoardRef[] {
     if (!fs.existsSync(dir)) continue;
     const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
     if (files.length === 0) continue;
-    return files.map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')) as BoardRef);
+    return files.map((f) => {
+      const raw = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+      // Boards now group state IDs under `linear.states` / `jira.states` (UP-761).
+      // Flatten the active system's states into the top-level `states` field
+      // that BoardRef expects, so state-machine tests stay namespace-agnostic.
+      const states = raw.ticketSystem === 'jira' ? raw.jira?.states : raw.linear?.states;
+      return { ...raw, states } as BoardRef;
+    });
   }
   return [];
 }
