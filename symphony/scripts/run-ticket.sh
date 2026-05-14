@@ -204,12 +204,35 @@ esac
 
 SESSION_ID_FILE="${WORKTREE_PATH}/.claude-session-id"
 
+# Claude derives the on-disk project dir from the worktree path by replacing
+# every "/" with "-" and prepending "-". The session jsonl lives at
+# ~/.claude/projects/<project-dir>/<session-id>.jsonl. Claude may garbage-collect
+# that jsonl (or the whole project dir) without touching our pointer file, in
+# which case `claude --resume <id>` prints "No conversation found" and exits 0
+# immediately. Detect that case here and fall back to creating a new session.
+CLAUDE_PROJECT_DIR="${HOME}/.claude/projects/$(echo "$WORKTREE_PATH" | tr '/' '-')"
+
+session_jsonl_exists() {
+  local id="$1"
+  [ -f "${CLAUDE_PROJECT_DIR}/${id}.jsonl" ]
+}
+
+START_NEW_SESSION=0
 if [ "$FRESH" = "--fresh" ] || [ ! -f "$SESSION_ID_FILE" ]; then
+  START_NEW_SESSION=1
+else
+  SESSION_ID=$(cat "$SESSION_ID_FILE")
+  if ! session_jsonl_exists "$SESSION_ID"; then
+    echo "[run] Pointer file references session ${SESSION_ID} but ${CLAUDE_PROJECT_DIR}/${SESSION_ID}.jsonl is gone — starting a new session."
+    START_NEW_SESSION=1
+  fi
+fi
+
+if [ "$START_NEW_SESSION" = "1" ]; then
   SESSION_ID=$(python3 -c "import uuid; print(uuid.uuid4())")
   echo "$SESSION_ID" > "$SESSION_ID_FILE"
   SESSION_FLAG="--session-id $SESSION_ID"
 else
-  SESSION_ID=$(cat "$SESSION_ID_FILE")
   SESSION_FLAG="--resume $SESSION_ID"
 fi
 
