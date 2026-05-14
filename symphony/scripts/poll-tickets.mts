@@ -1292,7 +1292,7 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
         // the instant it exits.
         const guardedAgent = agent;
         (async () => {
-          const owned = new Set([guardedAgent.board.states.todo, guardedAgent.board.states.inProgress, guardedAgent.board.states.rework]);
+          const owned = new Set([guardedAgent.board.states.todo, guardedAgent.board.states.inProgress]);
           let stateId: string | null;
           try {
             stateId = await fetchTicketStateId(guardedAgent.board, ticket.identifier);
