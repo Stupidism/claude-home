@@ -5,6 +5,15 @@ description: Find Playwright E2E test screenshots and videos after tests run, up
 
 # Paste E2E Artifacts
 
+**Linear-only.** This skill uses Linear's `fileUpload` mutation, which has no Jira equivalent. Callers must skip this skill when `$TICKET_SYSTEM != linear` — `submit-for-review` already invokes it as best-effort, so a Jira ticket should simply not run it. On Jira tickets, log local artifact paths into the workpad through the ticket dispatcher instead.
+
+```bash
+if [ "$TICKET_SYSTEM" != "linear" ]; then
+  echo "paste-e2e-artifacts is Linear-only; skipping for $TICKET_SYSTEM" >&2
+  exit 0
+fi
+```
+
 After running Playwright E2E tests, find generated screenshots/videos and upload them to Linear so they can be embedded in the workpad as proof of work.
 
 ## Step 1 — Find Artifacts
@@ -101,7 +110,7 @@ Append the proof of work block to the existing workpad body (do not replace the 
 
 1. Read the current workpad body (from the comment ID saved earlier)
 2. Append the `### E2E Proof of Work` section before `### Notes`
-3. Update the comment via `commentUpdate` (see `$SKILLS_ROOT/ticket/SKILL.md` for the dispatcher; this skill itself is currently Linear-only because Jira's attachment API differs — for Jira workpads, fall back to logging local file paths in the workpad)
+3. Update the comment via `commentUpdate` (see `$SKILLS_ROOT/linear/SKILL.md`)
 
 ## Notes
 

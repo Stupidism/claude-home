@@ -23,8 +23,21 @@ Preferred: `mcp__mcp-atlassian__jira_get_issue` with `issue_key: $TICKET_ID` —
 Curl fallback:
 
 ```bash
+: "${JIRA_EMAIL:?JIRA_EMAIL not set}"
+: "${JIRA_API_TOKEN:?JIRA_API_TOKEN not set}"
+
 BOARD_FILE="$SYMPHONY_ROOT/config/boards/$(echo "$TICKET_ID" | cut -d- -f1 | tr A-Z a-z).json"
+if [ ! -f "$BOARD_FILE" ]; then
+  echo "Board config not found: $BOARD_FILE" >&2
+  exit 1
+fi
+
 JIRA_BASE_URL=$(jq -r '.jira.baseUrl' "$BOARD_FILE")
+if [ -z "$JIRA_BASE_URL" ] || [ "$JIRA_BASE_URL" = "null" ]; then
+  echo "Missing .jira.baseUrl in $BOARD_FILE" >&2
+  exit 1
+fi
+
 # tr -d '\n' guards against GNU `base64`'s default 76-column line wrap.
 JIRA_AUTH="Basic $(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 | tr -d '\n')"
 

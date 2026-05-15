@@ -29,4 +29,4 @@ Ensure all checklist items are checked off and the `### Validation` section show
 
 ## Step 3 — Move to Human Review
 
-Read `$SKILLS_ROOT/ticket/SKILL.md` for the state-transition command (the dispatcher routes to the right sub-skill). Transition to the **Human Review** state — on Linear this is the state UUID exported as `$STATE_HUMAN_REVIEW`; on Jira this is the status name `$STATE_HUMAN_REVIEW` (resolve the numeric transition ID via the board config or `getTransitionsForJiraIssue`).
+Read `$SKILLS_ROOT/ticket/SKILL.md` and pass the symbolic state `Human Review` (or `$STATE_HUMAN_REVIEW`, which holds the system-specific identifier — a UUID on Linear, a status name on Jira) to the dispatcher. The matching sub-skill takes care of the rest internally: Linear consumes the UUID directly, and the Jira sub-skill resolves the numeric transition ID from the board config or `jira_get_transitions` before calling `jira_transition_issue`.
