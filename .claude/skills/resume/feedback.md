@@ -18,14 +18,15 @@ curl -s -X POST https://api.linear.app/graphql \
 
 ### Jira (`$TICKET_SYSTEM=jira`)
 
-Preferred: `mcp__claude_ai_Atlassian__getJiraIssue` with `issueIdOrKey: $TICKET_ID` — the comments come back inline under `fields.comment.comments`.
+Preferred: `mcp__mcp-atlassian__jira_get_issue` with `issue_key: $TICKET_ID` — the comments come back inline. (If only the `mcp__claude_ai_Atlassian__*` connector is present, use `getJiraIssue` with `issueIdOrKey: $TICKET_ID` instead.)
 
 Curl fallback:
 
 ```bash
 BOARD_FILE="$SYMPHONY_ROOT/config/boards/$(echo "$TICKET_ID" | cut -d- -f1 | tr A-Z a-z).json"
 JIRA_BASE_URL=$(jq -r '.jira.baseUrl' "$BOARD_FILE")
-JIRA_AUTH="Basic $(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64)"
+# tr -d '\n' guards against GNU `base64`'s default 76-column line wrap.
+JIRA_AUTH="Basic $(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 | tr -d '\n')"
 
 curl -s -H "Authorization: $JIRA_AUTH" -H "Accept: application/json" \
   "$JIRA_BASE_URL/rest/api/3/issue/$TICKET_ID/comment?maxResults=20&orderBy=-created" \

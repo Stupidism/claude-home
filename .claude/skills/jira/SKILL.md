@@ -5,7 +5,7 @@ description: Jira ticket operations — workpad CRUD, state transitions, comment
 
 # Jira Operations
 
-**Prefer `mcp__claude_ai_Atlassian__*` MCP tools when available** — they handle auth and ADF wrapping automatically. Fall back to Atlassian REST v3 only when those tools are absent from the current session.
+**Prefer `mcp__mcp-atlassian__jira_*` MCP tools when available** — they handle auth and ADF wrapping automatically. This is the namespace the rest of the repo uses (see `$SKILLS_ROOT/new-ticket/SKILL.md`); the `mcp__claude_ai_Atlassian__*` connector is a possible alternative but is not the project's default. Fall back to Atlassian REST v3 only when both MCP namespaces are absent from the current session.
 
 ## Environment
 
@@ -28,17 +28,17 @@ JIRA_BASE_URL=$(jq -r '.jira.baseUrl' "$BOARD_FILE")
 
 | Intent | MCP tool |
 |---|---|
-| Get ticket details + comments | `mcp__claude_ai_Atlassian__getJiraIssue` with `issueIdOrKey: $TICKET_ID` (comments are returned in `fields.comment.comments`) |
-| Create a comment (workpad) | `mcp__claude_ai_Atlassian__addCommentToJiraIssue` — pass the markdown body as a plain string; the tool wraps it as ADF |
+| Get ticket details + comments | `mcp__mcp-atlassian__jira_get_issue` with `issue_key: $TICKET_ID` (comments come back inline) |
+| Create a comment (workpad) | `mcp__mcp-atlassian__jira_add_comment` — pass markdown directly |
 | Update a comment (workpad) | **No MCP tool** — use the REST fallback (`PUT /rest/api/3/issue/{key}/comment/{id}`) |
 | Delete a comment | **No MCP tool** — use the REST fallback (`DELETE /rest/api/3/issue/{key}/comment/{id}`) |
-| List available transitions | `mcp__claude_ai_Atlassian__getTransitionsForJiraIssue` |
-| Transition ticket state | `mcp__claude_ai_Atlassian__transitionJiraIssue` with the transition `id` returned above |
-| Create a new ticket | `mcp__claude_ai_Atlassian__createJiraIssue` |
+| List available transitions | `mcp__mcp-atlassian__jira_get_transitions` |
+| Transition ticket state | `mcp__mcp-atlassian__jira_transition_issue` with the transition `id` returned above |
+| Create a new ticket | `mcp__mcp-atlassian__jira_create_issue` (see `$SKILLS_ROOT/new-ticket/SKILL.md` for the canonical example) |
 
-State name → transition mapping: use `getTransitionsForJiraIssue` to list current transitions and pick the one whose `to.name` matches the target status (`In Progress`, `Human Review`, …). The `jira.transitions` block in the board config holds the static IDs if you prefer to skip the lookup.
+State name → transition mapping: list current transitions and pick the one whose target status matches the desired Symphony state (`In Progress`, `Human Review`, …). The `jira.transitions` block in the board config holds the static IDs if you prefer to skip the lookup.
 
-The first MCP call needs the `cloudId` for the workspace — `mcp__claude_ai_Atlassian__getAccessibleAtlassianResources` returns it.
+If only the alternative `mcp__claude_ai_Atlassian__*` connector is present (no `mcp-atlassian` server), the equivalent tool names are `getJiraIssue` / `addCommentToJiraIssue` / `getTransitionsForJiraIssue` / `transitionJiraIssue` / `createJiraIssue`, and `getAccessibleAtlassianResources` returns the `cloudId` required by those calls.
 
 ---
 
@@ -59,7 +59,10 @@ Jira-specific transport notes:
 Auth header:
 
 ```bash
-JIRA_AUTH="Basic $(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64)"
+# `base64` wraps at 76 columns by default on GNU coreutils, which would
+# embed a newline into the header. `tr -d '\n'` strips wrapping on both
+# macOS and GNU.
+JIRA_AUTH="Basic $(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 | tr -d '\n')"
 ```
 
 ### Get ticket + comments
