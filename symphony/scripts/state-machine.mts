@@ -53,7 +53,7 @@ export interface Deps<Board extends BoardRef = BoardRef> {
   // State transitions
   moveToInProgress(board: Board, issueId: string, identifier: string): Promise<void>;
   moveToHumanReview(board: Board, issueId: string, identifier: string): Promise<void>;
-  moveToInReview(board: Board, issueId: string, identifier: string): Promise<void>;
+  moveToMerging(board: Board, issueId: string, identifier: string): Promise<void>;
   moveToTodo(board: Board, issueId: string, identifier: string): Promise<void>;
   moveToDone(board: Board, issueId: string, identifier: string): Promise<void>;
 
@@ -96,6 +96,10 @@ export interface Deps<Board extends BoardRef = BoardRef> {
   postComment(board: Board, issueId: string, body: string): Promise<void>;
   spawnAIReview(ticket: Issue, board: Board, prUrl: string): void;
   spawnNotifyReview(ticket: Issue, board: Board, prUrl: string): Promise<string | null>;
+  /** Add a label to the ticket. Used by humanReview to record that the
+   *  team-notify side-effect has already fired (so it won't fire again on the
+   *  next poll cycle). */
+  addLabel(board: Board, issueId: string, label: string): Promise<void>;
 
   // Capacity / running-agent introspection
   isAgentRunning(identifier: string): boolean;
@@ -127,6 +131,7 @@ export type Effect =
   | { kind: 'finalizeMergedDuringReview' }
   | { kind: 'humanReviewWaitForApproval' }
   | { kind: 'humanReviewTriggerAI' }
+  | { kind: 'humanReviewNotifyTeam' }
   | { kind: 'humanReviewApproved' }
   | { kind: 'resetRework' }
   | { kind: 'cancelledCleanup' };
@@ -134,6 +139,10 @@ export type Effect =
 export const MAX_RETRIES = 3;
 export const AI_REVIEW_LOCK_PREFIX = '[symphony] aiReviewRequested:';
 export const APPROVAL_LOCK_PREFIX = '[symphony] developerApproved:';
+/** Developer-applied label that asks the poller to ping the team. */
+export const NEEDS_NOTIFY_LABEL = 'symphony:needs-notify-review';
+/** Poller-applied label that records the notify side-effect already fired. */
+export const REVIEW_NOTIFIED_LABEL = 'symphony:review-notified';
 
 // ── XState chart (declarative documentation + viz) ────────────────────────────
 
@@ -149,9 +158,9 @@ export type TicketEvent =
   | { type: 'AGENT_EXHAUSTED' }             // inProgress → backlog (give up after MAX_RETRIES)
   | { type: 'RESUME' }                      // inProgress → inProgress (stale resume)
   | { type: 'REVIEW_TRIGGER_AI' }           // humanReview → humanReview (post review comment)
-  | { type: 'REVIEW_APPROVED' }             // humanReview → inReview
+  | { type: 'REVIEW_NOTIFY_TEAM' }          // humanReview → humanReview (label-gated team notify)
+  | { type: 'REVIEW_APPROVED' }             // humanReview → merging (PR approved on GitHub)
   | { type: 'PR_MERGED_EARLY' }             // humanReview → done (reviewer merged directly)
-  | { type: 'READY_TO_MERGE' }              // inReview → merging (human moves the ticket)
   | { type: 'SPAWN_MERGING' }               // merging → merging (agent runs land skill)
   | { type: 'PR_MERGED' }                   // merging → done
   | { type: 'REWORK_REQUESTED' }            // any → rework (human moves the ticket)
@@ -189,15 +198,9 @@ export const ticketMachine = setup({
     humanReview: {
       on: {
         REVIEW_TRIGGER_AI: 'humanReview',
-        REVIEW_APPROVED: 'inReview',
+        REVIEW_NOTIFY_TEAM: 'humanReview',
+        REVIEW_APPROVED: 'merging',
         PR_MERGED_EARLY: 'done',
-        REWORK_REQUESTED: 'rework',
-        CANCEL: 'cancelled',
-      },
-    },
-    inReview: {
-      on: {
-        READY_TO_MERGE: 'merging',
         REWORK_REQUESTED: 'rework',
         CANCEL: 'cancelled',
       },
@@ -269,7 +272,7 @@ async function handleInProgress<B extends BoardRef>({ ticket, board, deps, prevS
   if (occupant) return { kind: 'noop', reason: `worktree busy (held by ${occupant})` };
   if (deps.agentSlotsAvailable() <= 0) return { kind: 'noop', reason: 'no agent slots' };
 
-  const fromReview = prevState === 'humanReview' || prevState === 'inReview' || prevState === 'rework';
+  const fromReview = prevState === 'humanReview' || prevState === 'rework';
   const mode: SpawnMode = fromReview ? 'feedback' : 'continue';
 
   deps.log(`Resuming (${mode}) ${ticket.identifier} — ${ticket.title}`);
@@ -326,21 +329,36 @@ async function handleHumanReview<B extends BoardRef>({ ticket, board, deps }: Di
     triggeredAI = true;
   }
 
-  if (alreadyHandled) {
-    return triggeredAI ? { kind: 'humanReviewTriggerAI' } : { kind: 'noop', reason: 'approval already handled' };
-  }
-
-  if (approved && prUrl) {
-    await deps.postComment(board, ticket.id, `${APPROVAL_LOCK_PREFIX} notifying team…`);
-    await deps.moveToInReview(board, ticket.id, ticket.identifier);
-    void deps.spawnNotifyReview(ticket, board, prUrl).then(async (slackLink) => {
-      if (slackLink) {
-        await deps.postComment(board, ticket.id, `${APPROVAL_LOCK_PREFIX} ${slackLink}`).catch(() => {});
-      }
-    });
+  // Approval → move directly to Merging. In Review is gone (UP-782); the gate
+  // from Human Review to Merging is still PR approval, just one hop shorter.
+  // Gated by alreadyHandled (the APPROVAL_LOCK comment) so we don't re-fire if
+  // a previous cycle already moved the ticket.
+  if (!alreadyHandled && approved && prUrl) {
+    await deps.postComment(board, ticket.id, `${APPROVAL_LOCK_PREFIX} approved → Merging`);
+    await deps.moveToMerging(board, ticket.id, ticket.identifier);
     return { kind: 'humanReviewApproved' };
   }
 
+  // Label-gated team notify, independent of approval state. The developer adds
+  // NEEDS_NOTIFY_LABEL when they're done self-reviewing and want colleagues
+  // pinged; the poller fires notify-review once and stamps REVIEW_NOTIFIED_LABEL
+  // so it doesn't repeat. To re-notify, the developer removes
+  // REVIEW_NOTIFIED_LABEL. The label pair is its own lock — independent of
+  // APPROVAL_LOCK comments, since notify and approval are orthogonal flows.
+  if (prUrl
+    && ticket.labels.includes(NEEDS_NOTIFY_LABEL)
+    && !ticket.labels.includes(REVIEW_NOTIFIED_LABEL)
+  ) {
+    // Stamp the label first so a slow/failing spawn can't cause a double-ping
+    // on the next poll cycle. Manual removal is the documented re-notify path.
+    await deps.addLabel(board, ticket.id, REVIEW_NOTIFIED_LABEL);
+    void deps.spawnNotifyReview(ticket, board, prUrl);
+    return { kind: 'humanReviewNotifyTeam' };
+  }
+
+  if (alreadyHandled) {
+    return triggeredAI ? { kind: 'humanReviewTriggerAI' } : { kind: 'noop', reason: 'approval already handled' };
+  }
   return triggeredAI ? { kind: 'humanReviewTriggerAI' } : { kind: 'humanReviewWaitForApproval' };
 }
 
@@ -427,7 +445,6 @@ export async function processTicket<B extends BoardRef>(
     case 'merging':      return handleMerging(args);
     case 'rework':       return handleRework(args);
     case 'cancelled':    return handleCancelled(args);
-    case 'inReview':     return { kind: 'noop', reason: 'inReview — waiting for human to move to merging' };
     case 'backlog':      return { kind: 'noop', reason: 'backlog — not actionable' };
     case 'done':         return { kind: 'noop', reason: 'done — terminal' };
   }

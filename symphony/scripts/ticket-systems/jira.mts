@@ -201,4 +201,22 @@ export const jiraAdapter: TicketSystemAdapter = {
       { method: 'DELETE' }
     );
   },
+
+  async addLabel(board, issueId, label) {
+    await jiraRequest(board, `/rest/api/2/issue/${encodeURIComponent(issueId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ update: { labels: [{ add: label }] } }),
+    });
+  },
+
+  async removeLabel(board, issueId, label) {
+    await jiraRequest(board, `/rest/api/2/issue/${encodeURIComponent(issueId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ update: { labels: [{ remove: label }] } }),
+    });
+  },
+
+  hasLabel(issue, label) {
+    return issue.labels.includes(label);
+  },
 };

@@ -544,8 +544,8 @@ const moveToHumanReview = (b: BoardConfig, id: string, ident: string) =>
   moveToState(b, id, ident, 'humanReview', 'Human Review', chalk.magenta);
 const moveToDone = (b: BoardConfig, id: string, ident: string) =>
   moveToState(b, id, ident, 'done', 'Done ✓', chalk.green);
-const moveToInReview = (b: BoardConfig, id: string, ident: string) =>
-  moveToState(b, id, ident, 'inReview', 'In Review', chalk.blue);
+const moveToMerging = (b: BoardConfig, id: string, ident: string) =>
+  moveToState(b, id, ident, 'merging', 'Merging', chalk.blue);
 const moveToTodo = (b: BoardConfig, id: string, ident: string) =>
   moveToState(b, id, ident, 'todo', 'Todo (reset from Rework)', chalk.cyan);
 
@@ -1000,7 +1000,7 @@ function boardForIdentifier(identifier: string): BoardConfig | null {
  * current ticket-system state. Session-only: this never mutates the ticket
  * — the state-machine handles transitions while the agent runs.
  *   - Already running → no-op (logged)
- *   - Human Review / In Review / Rework → spawns in feedback mode
+ *   - Human Review / Rework → spawns in feedback mode
  *   - Any other state → spawns in continue mode
  */
 async function forceResumeTicket(identifier: string): Promise<void> {
@@ -1040,7 +1040,7 @@ async function forceResumeTicket(identifier: string): Promise<void> {
   // The state-machine handles transitions when the agent runs.
 
   // Use feedback mode when coming from a review state so the agent reads all comments
-  const fromReview = stateName === 'Human Review' || stateName === 'In Review' || stateName === 'Rework';
+  const fromReview = stateName === 'Human Review' || stateName === 'Rework';
   const mode: SpawnMode = fromReview ? 'feedback' : 'continue';
 
   spawnAgent(ticket, board, mode);
@@ -1333,7 +1333,7 @@ const failureCounts = new Map<string, number>();
 const lastKnownState = new Map<string, StateKey>();
 const LAST_OBSERVED_FILE = path.join(SYMPHONY_ROOT, 'state', 'last-observed.json');
 const VALID_STATE_KEYS: ReadonlySet<StateKey> = new Set([
-  'backlog', 'todo', 'inProgress', 'humanReview', 'inReview', 'rework', 'merging', 'done', 'cancelled',
+  'backlog', 'todo', 'inProgress', 'humanReview', 'rework', 'merging', 'done', 'cancelled',
 ]);
 
 function loadLastObservedState(): void {
@@ -1495,7 +1495,6 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
     STATE_TODO: statesFor(board).todo,
     STATE_IN_PROGRESS: statesFor(board).inProgress,
     STATE_HUMAN_REVIEW: statesFor(board).humanReview,
-    STATE_IN_REVIEW: statesFor(board).inReview,
     STATE_REWORK: statesFor(board).rework,
     STATE_MERGING: statesFor(board).merging,
     STATE_DONE: statesFor(board).done,
@@ -1694,6 +1693,10 @@ async function checkHumanReviewApproval(issue: Issue, board: BoardConfig) {
 
 async function postComment(board: BoardConfig, issueId: string, body: string): Promise<void> {
   await getAdapter(board).postComment(board, issueId, body);
+}
+
+async function addLabel(board: BoardConfig, issueId: string, label: string): Promise<void> {
+  await getAdapter(board).addLabel(board, issueId, label);
 }
 
 function spawnNotifyReview(issue: Issue, board: BoardConfig, prUrl: string): Promise<string | null> {
@@ -1905,7 +1908,7 @@ async function poll(): Promise<void> {
     const deps: StateMachineDeps<BoardConfig> = {
       moveToInProgress,
       moveToHumanReview,
-      moveToInReview,
+      moveToMerging,
       moveToTodo,
       moveToDone,
       spawnAgent,
@@ -1918,6 +1921,7 @@ async function poll(): Promise<void> {
       postComment,
       spawnAIReview,
       spawnNotifyReview,
+      addLabel,
       isAgentRunning: (id) => runningAgents.has(id),
       agentSlotsAvailable: () => Math.max(0, MAX_CONCURRENT - runningAgents.size),
       failureCountFor: (id) => failureCounts.get(id) ?? 0,
@@ -2035,10 +2039,10 @@ async function poll(): Promise<void> {
       continue;
     }
     const deps: StateMachineDeps<BoardConfig> = {
-      moveToInProgress, moveToHumanReview, moveToInReview, moveToTodo, moveToDone,
+      moveToInProgress, moveToHumanReview, moveToMerging, moveToTodo, moveToDone,
       spawnAgent, resetReworkTicket, removeWorktree, cleanupCancelledTicket,
       areAllPRsMerged, isPRUrlMerged,
-      checkHumanReviewApproval, postComment, spawnAIReview, spawnNotifyReview,
+      checkHumanReviewApproval, postComment, spawnAIReview, spawnNotifyReview, addLabel,
       isAgentRunning: (id) => runningAgents.has(id),
       agentSlotsAvailable: () => Math.max(0, MAX_CONCURRENT - runningAgents.size),
       failureCountFor: (id) => failureCounts.get(id) ?? 0,

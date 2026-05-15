@@ -80,7 +80,7 @@ function makeDeps(overrides: Partial<Deps<BoardRef>> = {}): { deps: Deps<BoardRe
   const deps: Deps<BoardRef> = {
     moveToInProgress: recordAsync('moveToInProgress', undefined),
     moveToHumanReview: recordAsync('moveToHumanReview', undefined),
-    moveToInReview: recordAsync('moveToInReview', undefined),
+    moveToMerging: recordAsync('moveToMerging', undefined),
     moveToTodo: recordAsync('moveToTodo', undefined),
     moveToDone: recordAsync('moveToDone', undefined),
     spawnAgent: record('spawnAgent'),
@@ -92,7 +92,8 @@ function makeDeps(overrides: Partial<Deps<BoardRef>> = {}): { deps: Deps<BoardRe
     checkHumanReviewApproval: async () => ({ alreadyHandled: false, aiReviewed: false, approved: false, prUrl: null, lockedPrUrl: null }),
     postComment: recordAsync('postComment', undefined),
     spawnAIReview: record('spawnAIReview'),
-    spawnNotifyReview: async () => null,
+    spawnNotifyReview: (async () => null) as Deps<BoardRef>['spawnNotifyReview'],
+    addLabel: recordAsync('addLabel', undefined),
     isAgentRunning: () => false,
     agentSlotsAvailable: () => 5,
     failureCountFor: () => 0,
@@ -268,7 +269,7 @@ for (const board of boards) {
     assert.deepEqual(fnNames(calls), ['removeWorktree', 'moveToDone']);
   });
 
-  test(`[${board.name}] humanReview with approval → posts lock + moves to In Review`, async () => {
+  test(`[${board.name}] humanReview with approval → posts lock + moves directly to Merging`, async () => {
     const ticket = stubTicket(board.ticketPrefix, 107, 'humanReview', board);
     const { deps, calls } = makeDeps({
       checkHumanReviewApproval: async () => ({
@@ -281,8 +282,69 @@ for (const board of boards) {
     });
     const effect = await processTicket('humanReview', ticket, board, deps);
     assert.deepEqual(effect, { kind: 'humanReviewApproved' });
-    // postComment (approval lock) + moveToInReview, in that order
-    assert.deepEqual(fnNames(calls).slice(0, 2), ['postComment', 'moveToInReview']);
+    // postComment (approval lock) + moveToMerging, in that order (UP-782: no In Review hop)
+    assert.deepEqual(fnNames(calls).slice(0, 2), ['postComment', 'moveToMerging']);
+  });
+
+  test(`[${board.name}] humanReview with no notify-review label → no notify, no addLabel`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 130, 'humanReview', board);
+    const spawnCalls: string[] = [];
+    const { deps, calls } = makeDeps({
+      checkHumanReviewApproval: async () => ({
+        alreadyHandled: true, // skip AI-review path so we isolate notify gating
+        aiReviewed: true,
+        approved: false,
+        prUrl: 'https://github.com/x/y/pull/3',
+        lockedPrUrl: 'https://github.com/x/y/pull/3',
+      }),
+      spawnNotifyReview: async (_t, _b, url) => { spawnCalls.push(url); return null; },
+    });
+    const effect = await processTicket('humanReview', ticket, board, deps);
+    assert.equal(effect.kind, 'noop');
+    assert.deepEqual(spawnCalls, [], 'notify must not fire without the needs-notify label');
+    assert.ok(!fnNames(calls).includes('addLabel'));
+  });
+
+  test(`[${board.name}] humanReview with symphony:needs-notify-review and no review-notified → fires notify + stamps label`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 131, 'humanReview', board);
+    ticket.labels = ['symphony:needs-notify-review'];
+    const spawnCalls: string[] = [];
+    const { deps, calls } = makeDeps({
+      checkHumanReviewApproval: async () => ({
+        alreadyHandled: true,
+        aiReviewed: true,
+        approved: false,
+        prUrl: 'https://github.com/x/y/pull/4',
+        lockedPrUrl: 'https://github.com/x/y/pull/4',
+      }),
+      spawnNotifyReview: async (_t, _b, url) => { spawnCalls.push(url); return 'https://slack/x'; },
+    });
+    const effect = await processTicket('humanReview', ticket, board, deps);
+    assert.deepEqual(effect, { kind: 'humanReviewNotifyTeam' });
+    assert.deepEqual(spawnCalls, ['https://github.com/x/y/pull/4']);
+    const addLabelCall = calls.find((c) => c.fn === 'addLabel');
+    assert.ok(addLabelCall, 'addLabel must be called');
+    assert.equal((addLabelCall!.args as unknown[])[2], 'symphony:review-notified');
+  });
+
+  test(`[${board.name}] humanReview with both notify labels → does NOT re-fire notify`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 132, 'humanReview', board);
+    ticket.labels = ['symphony:needs-notify-review', 'symphony:review-notified'];
+    const spawnCalls: string[] = [];
+    const { deps, calls } = makeDeps({
+      checkHumanReviewApproval: async () => ({
+        alreadyHandled: true,
+        aiReviewed: true,
+        approved: false,
+        prUrl: 'https://github.com/x/y/pull/5',
+        lockedPrUrl: 'https://github.com/x/y/pull/5',
+      }),
+      spawnNotifyReview: async (_t, _b, url) => { spawnCalls.push(url); return 'https://slack/x'; },
+    });
+    const effect = await processTicket('humanReview', ticket, board, deps);
+    assert.equal(effect.kind, 'noop');
+    assert.deepEqual(spawnCalls, []);
+    assert.ok(!fnNames(calls).includes('addLabel'));
   });
 
   test(`[${board.name}] humanReview without AI review yet → posts AI-review lock + spawns review`, async () => {
@@ -430,12 +492,12 @@ for (const board of boards) {
     assert.deepEqual(fnNames(calls), ['resetReworkTicket']);
   });
 
-  test(`[${board.name}] inReview / backlog / done → no-op`, async () => {
-    const states: StateKey[] = ['inReview', 'backlog', 'done'];
+  test(`[${board.name}] backlog / done → no-op`, async () => {
+    const states: StateKey[] = ['backlog', 'done'];
     for (const s of states) {
       const ticket = stubTicket(board.ticketPrefix, 113, s, board);
       const { deps, calls } = makeDeps();
-      const effect = await processTicket(s, ticket, board, deps);
+      const effect = await processTicket(s, ticket, board, deps, null);
       assert.equal(effect.kind, 'noop');
       assert.deepEqual(calls, []);
     }
@@ -471,21 +533,14 @@ for (const board of boards) {
       calls.push(await processTicket('humanReview', ticket, board, deps, lastSeen));
       lastSeen = 'humanReview';
     }
-    // 4. inReview — waiting
-    {
-      const ticket = stubTicket(board.ticketPrefix, 999, 'inReview', board);
-      const { deps } = makeDeps();
-      calls.push(await processTicket('inReview', ticket, board, deps, lastSeen));
-      lastSeen = 'inReview';
-    }
-    // 5. merging — spawn agent
+    // 4. merging — spawn agent (UP-782: approval skips inReview, goes straight here)
     {
       const ticket = stubTicket(board.ticketPrefix, 999, 'merging', board);
       const { deps } = makeDeps();
       calls.push(await processTicket('merging', ticket, board, deps, lastSeen));
       lastSeen = 'merging';
     }
-    // 6. merging — PR now merged, finalize
+    // 5. merging — PR now merged, finalize
     {
       const ticket = stubTicket(board.ticketPrefix, 999, 'merging', board);
       const { deps } = makeDeps({ areAllPRsMerged: () => true });
@@ -497,7 +552,6 @@ for (const board of boards) {
     assert.deepEqual(kinds, [
       'claim',
       'humanReviewApproved',
-      'noop',
       'spawnMergingAgent',
       'finalizeMerged',
     ]);
@@ -508,10 +562,10 @@ for (const board of boards) {
 
 // ── XState chart sanity ───────────────────────────────────────────────────────
 
-test('ticketMachine has all 9 Symphony states (cancelled added in UP-775)', () => {
+test('ticketMachine has all 8 Symphony states (UP-782 removed inReview; UP-775 added cancelled)', () => {
   const stateIds = Object.keys(ticketMachine.config.states ?? {});
   assert.deepEqual(stateIds.sort(), [
-    'backlog', 'cancelled', 'done', 'humanReview', 'inProgress', 'inReview', 'merging', 'rework', 'todo',
+    'backlog', 'cancelled', 'done', 'humanReview', 'inProgress', 'merging', 'rework', 'todo',
   ]);
 });
 

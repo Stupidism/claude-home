@@ -107,4 +107,53 @@ export const linearAdapter: TicketSystemAdapter = {
       { id: commentId }
     );
   },
+
+  async addLabel(board, issueId, label) {
+    const labelId = await ensureLabelId(board, label);
+    await linearQuery(
+      `mutation AddLabel($id: String!, $labelId: String!) {
+        issueAddLabel(id: $id, labelId: $labelId) { success }
+      }`,
+      { id: issueId, labelId }
+    );
+  },
+
+  async removeLabel(board, issueId, label) {
+    const labelId = await findLabelId(board, label);
+    if (!labelId) return;
+    await linearQuery(
+      `mutation RemoveLabel($id: String!, $labelId: String!) {
+        issueRemoveLabel(id: $id, labelId: $labelId) { success }
+      }`,
+      { id: issueId, labelId }
+    );
+  },
+
+  hasLabel(issue, label) {
+    return issue.labels.includes(label);
+  },
 };
+
+async function findLabelId(board: BoardLike, name: string): Promise<string | null> {
+  const data = await linearQuery<{ team: { labels: { nodes: { id: string }[] } } | null }>(
+    `query FindLabel($teamId: String!, $name: String!) {
+      team(id: $teamId) {
+        labels(filter: { name: { eq: $name } }, first: 1) { nodes { id } }
+      }
+    }`,
+    { teamId: board.teamId, name }
+  );
+  return data.team?.labels.nodes[0]?.id ?? null;
+}
+
+async function ensureLabelId(board: BoardLike, name: string): Promise<string> {
+  const existing = await findLabelId(board, name);
+  if (existing) return existing;
+  const created = await linearQuery<{ issueLabelCreate: { issueLabel: { id: string } } }>(
+    `mutation CreateLabel($input: IssueLabelCreateInput!) {
+      issueLabelCreate(input: $input) { issueLabel { id } }
+    }`,
+    { input: { teamId: board.teamId, name } }
+  );
+  return created.issueLabelCreate.issueLabel.id;
+}

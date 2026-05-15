@@ -31,7 +31,6 @@ export interface StateKeys {
   todo: string;
   inProgress: string;
   humanReview: string;
-  inReview: string;
   rework: string;
   merging: string;
   done: string;
@@ -84,4 +83,12 @@ export interface TicketSystemAdapter {
   listComments(board: BoardLike, issueId: string): Promise<{ id: string; body: string }[]>;
   /** Delete a comment. Jira needs both the issue and the comment; Linear ignores issueId. */
   deleteComment(board: BoardLike, issueId: string, commentId: string): Promise<void>;
+  /** Add a label to a ticket. Idempotent — backend will dedupe. */
+  addLabel(board: BoardLike, issueId: string, label: string): Promise<void>;
+  /** Remove a label from a ticket. No-op if the label isn't attached. */
+  removeLabel(board: BoardLike, issueId: string, label: string): Promise<void>;
+  /** Check whether an already-fetched Issue carries a label. Pure helper —
+   *  reads `issue.labels` so callers don't have to spell the includes-check
+   *  themselves. */
+  hasLabel(issue: Issue, label: string): boolean;
 }

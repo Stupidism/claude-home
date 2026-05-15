@@ -34,8 +34,7 @@
 | `Backlog`      | **停止。不得操作。**                                                               |
 | `Todo`         | 读取 `$SKILLS_ROOT/read-and-plan/SKILL.md` → `setup-worktree` → 开始工作          |
 | `In Progress`  | 从 workpad 恢复                                                                    |
-| `Human Review` | 等待。不得写代码。                                                                  |
-| `In Review`    | 等待。不得写代码。                                                                  |
+| `Human Review` | 等待。不得写代码。可选：加 `symphony:needs-notify-review` 标签让 poller ping 团队。   |
 | `Rework`       | 读取 `$SKILLS_ROOT/rework/SKILL.md`                                               |
 | `Merging`      | 通过 Skill 工具调用 `land` skill。不得移动到 Done — poller 在你退出后完成该操作     |
 | `Done`         | 关闭。                                                                             |
