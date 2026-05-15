@@ -48,6 +48,10 @@ function loadBoards(): BoardRef[] {
 }
 
 function stubTicket(prefix: string, n: number, stateKey: StateKey, board: BoardRef): Issue {
+  // `cancelled` is optional on a board — when absent (e.g. test config-example
+  // boards), we still want to construct a ticket stub for dispatch-logic tests.
+  // The dispatcher never reads `state.id`, so a synthetic placeholder is fine.
+  const stateId = board.states?.[stateKey] ?? `synthetic-${stateKey}`;
   return {
     id: `uuid-${prefix}-${n}`,
     identifier: `${prefix}-${n}`,
@@ -55,7 +59,7 @@ function stubTicket(prefix: string, n: number, stateKey: StateKey, board: BoardR
     description: null,
     url: `https://example.test/${prefix}-${n}`,
     project: null,
-    state: { id: board.states[stateKey], name: stateKey },
+    state: { id: stateId, name: stateKey },
     assignee: null,
     labels: [],
   };
@@ -82,6 +86,7 @@ function makeDeps(overrides: Partial<Deps<BoardRef>> = {}): { deps: Deps<BoardRe
     spawnAgent: record('spawnAgent'),
     resetReworkTicket: recordAsync('resetReworkTicket', undefined),
     removeWorktree: record('removeWorktree'),
+    cleanupCancelledTicket: recordAsync('cleanupCancelledTicket', undefined),
     areAllPRsMerged: () => false,
     isPRUrlMerged: () => false,
     checkHumanReviewApproval: async () => ({ alreadyHandled: false, aiReviewed: false, approved: false, prUrl: null, lockedPrUrl: null }),
@@ -91,7 +96,6 @@ function makeDeps(overrides: Partial<Deps<BoardRef>> = {}): { deps: Deps<BoardRe
     isAgentRunning: () => false,
     agentSlotsAvailable: () => 5,
     failureCountFor: () => 0,
-    lastKnownState: () => undefined,
     worktreeOccupiedBy: () => null,
     isEligible: () => true,
     log: () => {},
@@ -140,8 +144,8 @@ for (const board of boards) {
 
   test(`[${board.name}] inProgress after Human Review → resumes with feedback`, async () => {
     const ticket = stubTicket(board.ticketPrefix, 103, 'inProgress', board);
-    const { deps } = makeDeps({ lastKnownState: () => 'Human Review' });
-    const effect = await processTicket('inProgress', ticket, board, deps);
+    const { deps } = makeDeps();
+    const effect = await processTicket('inProgress', ticket, board, deps, 'humanReview');
     assert.deepEqual(effect, { kind: 'resumeAgent', mode: 'feedback' });
   });
 
@@ -324,20 +328,72 @@ for (const board of boards) {
     assert.deepEqual(calls, []);
   });
 
-  test(`[${board.name}] rework with no running agent → resetReworkTicket`, async () => {
+  test(`[${board.name}] rework with no running agent (edge) → resetReworkTicket fires`, async () => {
     const ticket = stubTicket(board.ticketPrefix, 111, 'rework', board);
     const { deps, calls } = makeDeps();
-    const effect = await processTicket('rework', ticket, board, deps);
+    const effect = await processTicket('rework', ticket, board, deps, 'humanReview');
     assert.deepEqual(effect, { kind: 'resetRework' });
     assert.deepEqual(fnNames(calls), ['resetReworkTicket']);
+  });
+
+  test(`[${board.name}] rework when prevState is already rework → no-op (edge guard, UP-775)`, async () => {
+    // The bug this guards: a Rework ticket whose reset failed (or whose human
+    // is mid-conversation in the workpad) would have re-fired resetReworkTicket
+    // every poll cycle under the old level-triggered dispatcher.
+    const ticket = stubTicket(board.ticketPrefix, 119, 'rework', board);
+    const { deps, calls } = makeDeps();
+    const effect = await processTicket('rework', ticket, board, deps, 'rework');
+    assert.equal(effect.kind, 'noop');
+    if (effect.kind === 'noop') assert.match(effect.reason, /already reset/);
+    assert.deepEqual(calls, []);
   });
 
   test(`[${board.name}] rework with running agent → wait`, async () => {
     const ticket = stubTicket(board.ticketPrefix, 112, 'rework', board);
     const { deps, calls } = makeDeps({ isAgentRunning: () => true });
-    const effect = await processTicket('rework', ticket, board, deps);
+    const effect = await processTicket('rework', ticket, board, deps, 'inProgress');
     assert.deepEqual(effect, { kind: 'noop', reason: 'agent still running' });
     assert.deepEqual(calls, []);
+  });
+
+  test(`[${board.name}] cancelled on the prev→cancelled edge → fires cleanupCancelledTicket once`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 130, 'cancelled', board);
+    const { deps, calls } = makeDeps();
+    const effect = await processTicket('cancelled', ticket, board, deps, 'inProgress');
+    assert.deepEqual(effect, { kind: 'cancelledCleanup' });
+    assert.deepEqual(fnNames(calls), ['cleanupCancelledTicket']);
+  });
+
+  test(`[${board.name}] cancelled when prevState is already cancelled → no-op (UP-775 bug fix)`, async () => {
+    // The exact level-trigger bug flagged by Codex on PR #45: without an edge
+    // guard, every poll cycle would re-fire cleanup on every historical
+    // cancelled ticket — hammering `gh pr list` and the ticket comment API.
+    const ticket = stubTicket(board.ticketPrefix, 131, 'cancelled', board);
+    const { deps, calls } = makeDeps();
+    for (let i = 0; i < 5; i++) {
+      const effect = await processTicket('cancelled', ticket, board, deps, 'cancelled');
+      assert.equal(effect.kind, 'noop');
+    }
+    assert.deepEqual(calls, [], 'cleanupCancelledTicket must not fire on re-observation');
+  });
+
+  test(`[${board.name}] cancelled on cold start (prevState null) → still fires cleanup once`, async () => {
+    // Cold start (poller restart, no persisted state) must still treat the
+    // first observation as an edge, otherwise tickets cancelled while the
+    // poller was offline never get cleaned up.
+    const ticket = stubTicket(board.ticketPrefix, 132, 'cancelled', board);
+    const { deps, calls } = makeDeps();
+    const effect = await processTicket('cancelled', ticket, board, deps, null);
+    assert.deepEqual(effect, { kind: 'cancelledCleanup' });
+    assert.deepEqual(fnNames(calls), ['cleanupCancelledTicket']);
+  });
+
+  test(`[${board.name}] cancelled with a running agent → wait for agent to exit before cleaning up`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 133, 'cancelled', board);
+    const { deps, calls } = makeDeps({ isAgentRunning: () => true });
+    const effect = await processTicket('cancelled', ticket, board, deps, 'inProgress');
+    assert.deepEqual(effect, { kind: 'noop', reason: 'agent still running' });
+    assert.deepEqual(calls, [], 'cleanup deferred until the agent exits');
   });
 
   test(`[${board.name}] inReview / backlog / done → no-op`, async () => {
@@ -353,28 +409,23 @@ for (const board of boards) {
 
   test(`[${board.name}] full lifecycle walkthrough: todo → … → done`, async () => {
     const id = `${board.ticketPrefix}-999`;
-    let lastSeen: string | undefined;
+    let lastSeen: StateKey | null = null;
     const calls: Effect[] = [];
-
-    const make = (overrides: Partial<Deps<BoardRef>>) => makeDeps({
-      lastKnownState: () => lastSeen,
-      ...overrides,
-    });
 
     // 1. todo → claim
     {
       const ticket = stubTicket(board.ticketPrefix, 999, 'todo', board);
-      const { deps } = make({});
-      calls.push(await processTicket('todo', ticket, board, deps));
-      lastSeen = 'Todo';
+      const { deps } = makeDeps();
+      calls.push(await processTicket('todo', ticket, board, deps, lastSeen));
+      lastSeen = 'todo';
     }
     // 2. inProgress (stale, after claim) — agent done event fires moveToHumanReview
     //    externally; we just observe the transition by polling humanReview next.
-    lastSeen = 'In Progress';
+    lastSeen = 'inProgress';
     // 3. humanReview with approval
     {
       const ticket = stubTicket(board.ticketPrefix, 999, 'humanReview', board);
-      const { deps } = make({
+      const { deps } = makeDeps({
         checkHumanReviewApproval: async () => ({
           alreadyHandled: false,
           aiReviewed: true,
@@ -383,29 +434,29 @@ for (const board of boards) {
           lockedPrUrl: 'https://github.com/x/y/pull/999',
         }),
       });
-      calls.push(await processTicket('humanReview', ticket, board, deps));
-      lastSeen = 'Human Review';
+      calls.push(await processTicket('humanReview', ticket, board, deps, lastSeen));
+      lastSeen = 'humanReview';
     }
     // 4. inReview — waiting
     {
       const ticket = stubTicket(board.ticketPrefix, 999, 'inReview', board);
-      const { deps } = make({});
-      calls.push(await processTicket('inReview', ticket, board, deps));
-      lastSeen = 'In Review';
+      const { deps } = makeDeps();
+      calls.push(await processTicket('inReview', ticket, board, deps, lastSeen));
+      lastSeen = 'inReview';
     }
     // 5. merging — spawn agent
     {
       const ticket = stubTicket(board.ticketPrefix, 999, 'merging', board);
-      const { deps } = make({});
-      calls.push(await processTicket('merging', ticket, board, deps));
-      lastSeen = 'Merging';
+      const { deps } = makeDeps();
+      calls.push(await processTicket('merging', ticket, board, deps, lastSeen));
+      lastSeen = 'merging';
     }
     // 6. merging — PR now merged, finalize
     {
       const ticket = stubTicket(board.ticketPrefix, 999, 'merging', board);
-      const { deps } = make({ areAllPRsMerged: () => true });
-      calls.push(await processTicket('merging', ticket, board, deps));
-      lastSeen = 'Done';
+      const { deps } = makeDeps({ areAllPRsMerged: () => true });
+      calls.push(await processTicket('merging', ticket, board, deps, lastSeen));
+      lastSeen = 'done';
     }
 
     const kinds = calls.map((e) => e.kind);
@@ -423,14 +474,19 @@ for (const board of boards) {
 
 // ── XState chart sanity ───────────────────────────────────────────────────────
 
-test('ticketMachine has all 8 Symphony states', () => {
+test('ticketMachine has all 9 Symphony states (cancelled added in UP-775)', () => {
   const stateIds = Object.keys(ticketMachine.config.states ?? {});
   assert.deepEqual(stateIds.sort(), [
-    'backlog', 'done', 'humanReview', 'inProgress', 'inReview', 'merging', 'rework', 'todo',
+    'backlog', 'cancelled', 'done', 'humanReview', 'inProgress', 'inReview', 'merging', 'rework', 'todo',
   ]);
 });
 
 test('ticketMachine done is a final state', () => {
   const done = ticketMachine.config.states?.done as { type?: string } | undefined;
   assert.equal(done?.type, 'final');
+});
+
+test('ticketMachine cancelled is a final state', () => {
+  const cancelled = ticketMachine.config.states?.cancelled as { type?: string } | undefined;
+  assert.equal(cancelled?.type, 'final');
 });

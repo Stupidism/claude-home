@@ -704,6 +704,35 @@ function isPRUrlMerged(prUrl: string): boolean {
 }
 
 /**
+ * One-shot cleanup for a ticket the human moved to a terminal cancelled state.
+ *
+ * Closes any open PR for the synthesized branch, removes the worktree, and
+ * posts a single audit comment. The dispatcher (state-machine.mts) guards
+ * this so it fires only on the prev→cancelled edge — UP-775. Every operation
+ * is best-effort: a partial failure logs and moves on rather than throwing,
+ * because the alternative is the same one-shot retrying every poll cycle.
+ */
+async function cleanupCancelledTicket(issue: Issue, board: BoardConfig): Promise<void> {
+  const branch = branchForIssue(issue);
+  const repo = resolveRepo(issue, board);
+  try {
+    child_process.spawnSync(
+      'gh',
+      ['pr', 'close', branch, '--repo', repo.githubRepo, '--delete-branch'],
+      { encoding: 'utf8', timeout: 15_000 },
+    );
+  } catch (err) {
+    log(chalk.yellow(`[symphony] gh pr close failed for ${issue.identifier}: ${err}`));
+  }
+  removeWorktree(issue, board);
+  try {
+    await postComment(board, issue.id, '[symphony] cancelled — closed any open PR and removed the worktree.');
+  } catch (err) {
+    log(chalk.yellow(`[symphony] cancelled audit comment failed for ${issue.identifier}: ${err}`));
+  }
+}
+
+/**
  * Remove the local worktree for a ticket (best-effort).
  */
 function removeWorktree(issue: Issue, board: BoardConfig): void {
@@ -1290,7 +1319,49 @@ function setupHotReload(): void {
 
 const MAX_RETRIES = STATE_MACHINE_MAX_RETRIES;
 const failureCounts = new Map<string, number>();
-const lastKnownState = new Map<string, string>();
+/**
+ * Last observed Symphony `StateKey` per ticket identifier. Used by the state
+ * machine for edge-triggered dispatch (UP-775) — handlers whose effect is a
+ * one-shot action on entering a state (cancelled cleanup, rework reset) read
+ * this to know whether they're firing on the prev→state transition or just
+ * re-observing the same state.
+ *
+ * The Map is the read path; we mirror it to {@link LAST_OBSERVED_FILE} on disk
+ * so a poller restart doesn't lose the edge information and re-fire all
+ * one-shot handlers for every ticket parked in a terminal state.
+ */
+const lastKnownState = new Map<string, StateKey>();
+const LAST_OBSERVED_FILE = path.join(SYMPHONY_ROOT, 'state', 'last-observed.json');
+const VALID_STATE_KEYS: ReadonlySet<StateKey> = new Set([
+  'backlog', 'todo', 'inProgress', 'humanReview', 'inReview', 'rework', 'merging', 'done', 'cancelled',
+]);
+
+function loadLastObservedState(): void {
+  if (!fs.existsSync(LAST_OBSERVED_FILE)) return;
+  try {
+    const raw = JSON.parse(fs.readFileSync(LAST_OBSERVED_FILE, 'utf8')) as Record<string, string>;
+    for (const [id, state] of Object.entries(raw)) {
+      if (VALID_STATE_KEYS.has(state as StateKey)) {
+        lastKnownState.set(id, state as StateKey);
+      }
+    }
+  } catch (err) {
+    // A corrupt file just means the next cycle treats every ticket as a
+    // cold-start edge — annoying but not fatal. Log and move on.
+    console.warn(chalk.yellow(`[symphony] Failed to load ${LAST_OBSERVED_FILE}: ${err}`));
+  }
+}
+
+function saveLastObservedState(): void {
+  try {
+    fs.mkdirSync(path.dirname(LAST_OBSERVED_FILE), { recursive: true });
+    const obj: Record<string, StateKey> = {};
+    for (const [id, s] of lastKnownState) obj[id] = s;
+    fs.writeFileSync(LAST_OBSERVED_FILE, JSON.stringify(obj, null, 2));
+  } catch (err) {
+    console.warn(chalk.yellow(`[symphony] Failed to persist ${LAST_OBSERVED_FILE}: ${err}`));
+  }
+}
 const RATE_LIMIT_PATTERN = /You've hit your limit|rate.?limit/i;
 
 // Set when a rate-limit is detected; the main loop sleeps until this time.
@@ -1783,14 +1854,18 @@ async function poll(): Promise<void> {
   const allActiveIdentifiers = new Set<string>();
 
   for (const board of boards) {
-    let todoTickets: Issue[], inProgressTickets: Issue[], humanReviewTickets: Issue[], mergingTickets: Issue[], reworkTickets: Issue[];
+    let todoTickets: Issue[], inProgressTickets: Issue[], humanReviewTickets: Issue[], mergingTickets: Issue[], reworkTickets: Issue[], cancelledTickets: Issue[];
+    const boardStates = statesFor(board);
     try {
-      [todoTickets, inProgressTickets, humanReviewTickets, mergingTickets, reworkTickets] = await Promise.all([
+      [todoTickets, inProgressTickets, humanReviewTickets, mergingTickets, reworkTickets, cancelledTickets] = await Promise.all([
         fetchTicketsByState(board, 'todo'),
         fetchTicketsByState(board, 'inProgress'),
         fetchTicketsByState(board, 'humanReview'),
         fetchTicketsByState(board, 'merging'),
         fetchTicketsByState(board, 'rework'),
+        // Boards without a `cancelled` state simply contribute an empty list —
+        // the state machine then never dispatches `cancelled` for them.
+        boardStates.cancelled ? fetchTicketsByState(board, 'cancelled') : Promise.resolve<Issue[]>([]),
       ]);
     } catch (err) {
       const msg = String(err);
@@ -1836,6 +1911,7 @@ async function poll(): Promise<void> {
       spawnAgent,
       resetReworkTicket,
       removeWorktree,
+      cleanupCancelledTicket,
       areAllPRsMerged,
       isPRUrlMerged,
       checkHumanReviewApproval,
@@ -1845,7 +1921,6 @@ async function poll(): Promise<void> {
       isAgentRunning: (id) => runningAgents.has(id),
       agentSlotsAvailable: () => Math.max(0, MAX_CONCURRENT - runningAgents.size),
       failureCountFor: (id) => failureCounts.get(id) ?? 0,
-      lastKnownState: (id) => lastKnownState.get(id),
       worktreeOccupiedBy,
       isEligible,
       log,
@@ -1855,7 +1930,7 @@ async function poll(): Promise<void> {
       for (const issue of tickets) {
         let effect;
         try {
-          effect = await processTicket(state, issue, board, deps);
+          effect = await processTicket(state, issue, board, deps, lastKnownState.get(issue.identifier) ?? null);
         } catch (err) {
           log(chalk.red(`[symphony] processTicket(${state}) error for ${issue.identifier}: ${err}`));
           continue;
@@ -1879,6 +1954,11 @@ async function poll(): Promise<void> {
     await dispatch('merging', mergingTickets.filter((t) => isEligible(t, board)), 3000);
     await dispatch('rework', reworkTickets.filter((t) => isEligible(t, board)), 2000);
     await dispatch('inProgress', inProgressTickets.filter((t) => isEligible(t, board)), 3000);
+    // Cancelled is dispatched last: its one-shot cleanup doesn't compete for
+    // agent slots, and running it after In Progress means agents killed by the
+    // "no longer active" sweep above have already exited by the time we try
+    // to remove the worktree.
+    await dispatch('cancelled', cancelledTickets.filter((t) => isEligible(t, board)));
 
     // Classify todo tickets
     for (const t of todoTickets) {
@@ -1898,12 +1978,16 @@ async function poll(): Promise<void> {
     for (const t of mergingTickets) allSnapshot.push({ ticket: t, board, state: 'merging' });
     for (const t of reworkTickets) allSnapshot.push({ ticket: t, board, state: 'rework' });
 
-    // Update last-known states
-    for (const t of todoTickets) lastKnownState.set(t.identifier, 'Todo');
-    for (const t of inProgressTickets) lastKnownState.set(t.identifier, 'In Progress');
-    for (const t of humanReviewTickets) lastKnownState.set(t.identifier, 'Human Review');
-    for (const t of mergingTickets) lastKnownState.set(t.identifier, 'Merging');
-    for (const t of reworkTickets) lastKnownState.set(t.identifier, 'Rework');
+    // Update last-known states. These are written AFTER the dispatch above
+    // ran, so handlers receive the *previous* cycle's state via `prevState`
+    // and can detect the prev→state edge. Once we've finished dispatch, we
+    // snapshot the current cycle for the next one.
+    for (const t of todoTickets) lastKnownState.set(t.identifier, 'todo');
+    for (const t of inProgressTickets) lastKnownState.set(t.identifier, 'inProgress');
+    for (const t of humanReviewTickets) lastKnownState.set(t.identifier, 'humanReview');
+    for (const t of mergingTickets) lastKnownState.set(t.identifier, 'merging');
+    for (const t of reworkTickets) lastKnownState.set(t.identifier, 'rework');
+    for (const t of cancelledTickets) lastKnownState.set(t.identifier, 'cancelled');
 
     await cleanupDoneWorktrees(allActiveIdentifiers, board);
   }
@@ -1918,7 +2002,7 @@ async function poll(): Promise<void> {
   // visible. Tickets that came in via inProgress polling already had their own
   // handler run above; here we just want fresh Todos.
   for (const { ticket, board } of allEligible) {
-    if (lastKnownState.get(ticket.identifier) !== 'Todo') continue; // skip inProgress entries
+    if (lastKnownState.get(ticket.identifier) !== 'todo') continue; // skip inProgress entries
     if (runningAgents.has(ticket.identifier)) continue;
     if (runningAgents.size >= MAX_CONCURRENT) break;
     // Validate runtime before claiming the ticket. If we waited until spawnAgent
@@ -1932,16 +2016,18 @@ async function poll(): Promise<void> {
     }
     const deps: StateMachineDeps<BoardConfig> = {
       moveToInProgress, moveToHumanReview, moveToInReview, moveToTodo, moveToDone,
-      spawnAgent, resetReworkTicket, removeWorktree, areAllPRsMerged,
+      spawnAgent, resetReworkTicket, removeWorktree, cleanupCancelledTicket,
+      areAllPRsMerged, isPRUrlMerged,
       checkHumanReviewApproval, postComment, spawnAIReview, spawnNotifyReview,
       isAgentRunning: (id) => runningAgents.has(id),
       agentSlotsAvailable: () => Math.max(0, MAX_CONCURRENT - runningAgents.size),
       failureCountFor: (id) => failureCounts.get(id) ?? 0,
-      lastKnownState: (id) => lastKnownState.get(id),
       worktreeOccupiedBy,
       isEligible, log,
     };
-    await processTicket('todo', ticket, board, deps);
+    // prevState is null here: this branch only runs for fresh Todo tickets in
+    // the second pass, and Todo's handler doesn't consult prevState anyway.
+    await processTicket('todo', ticket, board, deps, null);
     renderDashboard();
     await sleep(3000);
   }
@@ -2025,6 +2111,7 @@ console.log('');
 
 setupInteractiveCommands();
 setupHotReload();
+loadLastObservedState();
 
 while (true) {
   // If a rate-limit pause is active, sleep in-place until the window expires
@@ -2093,5 +2180,6 @@ while (true) {
     }
   }
   await poll();
+  saveLastObservedState();
   await sleep(POLL_INTERVAL_MS);
 }

@@ -35,6 +35,9 @@ export interface StateKeys {
   rework: string;
   merging: string;
   done: string;
+  /** Terminal "cancelled / abandoned" state. Optional because not every board
+   *  exposes one; absent boards simply never dispatch `cancelled`. */
+  cancelled?: string;
 }
 
 export type StateKey = keyof StateKeys;

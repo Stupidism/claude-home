@@ -37,6 +37,8 @@ function toIssue(raw: RawLinearIssue): Issue {
 export const linearAdapter: TicketSystemAdapter = {
   async fetchTicketsByState(board, stateKey, assigneeId) {
     const stateId = linearOf(board).states[stateKey];
+    // Boards may legitimately omit optional states (e.g. `cancelled`).
+    if (!stateId) return [];
     const filter: Record<string, unknown> = { state: { id: { eq: stateId } } };
     if (assigneeId) filter['assignee'] = { id: { eq: assigneeId } };
 
