@@ -735,6 +735,9 @@ interface AgentEntry {
   worktreePath: string;
   board: BoardConfig;
   logOffset: number;
+  /** Set when a user invoked `kill`/`restart`; the exit handler must skip
+   *  retries, rate-limit checks, and the auto Human Review transition. */
+  userKilled?: boolean;
 }
 
 const runningAgents = new Map<string, AgentEntry>();
@@ -824,7 +827,7 @@ function buildDashboard(updatedAt: string): string {
 
   let out = table.toString();
   out += `\n  ${chalk.dim(`Updated ${updatedAt}  •  agents ${runningAgents.size}/${MAX_CONCURRENT}  •  boards: ${boards.map((b) => b.ticketPrefix).join(', ')}  •  next poll in ${POLL_INTERVAL_MS / 1000}s`)}`;
-  out += `\n  ${chalk.dim(`Type ${chalk.white('resume <id>')} to force-open a session  •  ${chalk.white('help')} for commands`)}`;
+  out += `\n  ${chalk.dim(`Type ${chalk.white('resume <id>')} / ${chalk.white('kill <id>')} / ${chalk.white('restart <id>')}  •  ${chalk.white('help')} for commands`)}`;
   return out;
 }
 
@@ -964,11 +967,12 @@ function boardForIdentifier(identifier: string): BoardConfig | null {
 }
 
 /**
- * Force-open a session for any ticket by identifier, regardless of current Linear state.
+ * Force-open a claude session for any ticket by identifier, regardless of
+ * current ticket-system state. Session-only: this never mutates the ticket
+ * — the state-machine handles transitions while the agent runs.
  *   - Already running → no-op (logged)
- *   - Human Review / In Review / Rework → moves to In Progress, spawns in feedback mode
- *   - In Progress (no agent) → spawns in continue mode
- *   - Any other state → moves to In Progress, spawns in continue mode
+ *   - Human Review / In Review / Rework → spawns in feedback mode
+ *   - Any other state → spawns in continue mode
  */
 async function forceResumeTicket(identifier: string): Promise<void> {
   const upper = identifier.toUpperCase();
@@ -1003,15 +1007,8 @@ async function forceResumeTicket(identifier: string): Promise<void> {
   // Clear previous failure count so the agent gets a fresh attempt
   failureCounts.delete(upper);
 
-  // Move to In Progress if not already there
-  if (ticket.state.id !== statesFor(board).inProgress) {
-    try {
-      await moveToInProgress(board, ticket.id, ticket.identifier);
-    } catch (err) {
-      log(chalk.red(`[${timestamp()}] ✗ Failed to move ${upper} to In Progress: ${err}`));
-      return;
-    }
-  }
+  // Resume is a pure claude-session operation: never mutate ticket state here.
+  // The state-machine handles transitions when the agent runs.
 
   // Use feedback mode when coming from a review state so the agent reads all comments
   const fromReview = stateName === 'Human Review' || stateName === 'In Review' || stateName === 'Rework';
@@ -1021,49 +1018,181 @@ async function forceResumeTicket(identifier: string): Promise<void> {
 }
 
 /**
+ * Stop a running agent without changing the ticket state.
+ * SIGTERM → 500ms grace → SIGKILL. Cleans up the agent-pid file and the
+ * runningAgents entry. Awaits child `exit` so callers (e.g. restart) can
+ * safely respawn afterwards.
+ */
+async function killAgent(identifier: string): Promise<void> {
+  const upper = identifier.toUpperCase();
+  const agent = runningAgents.get(upper);
+  if (!agent) {
+    log(chalk.yellow(`[${timestamp()}] ⏭ No running agent for ${upper}`));
+    return;
+  }
+
+  agent.userKilled = true;
+  const proc = agent.proc;
+  const pid = proc.pid;
+  log(chalk.yellow(`[${timestamp()}] ✋ Killing agent ${chalk.bold(upper)}${pid ? ` (PID ${pid})` : ''}`));
+
+  const exited = new Promise<void>((resolve) => {
+    if (proc.exitCode != null || proc.signalCode != null) { resolve(); return; }
+    proc.once('exit', () => resolve());
+  });
+
+  try { proc.kill('SIGTERM'); } catch { /* already dead */ }
+
+  const killTimer = setTimeout(() => {
+    if (proc.exitCode == null && proc.signalCode == null) {
+      log(chalk.red(`[${timestamp()}] ✗ Agent ${upper} didn't exit on SIGTERM — sending SIGKILL`));
+      try { proc.kill('SIGKILL'); } catch { /* already dead */ }
+    }
+  }, 500);
+
+  await exited;
+  clearTimeout(killTimer);
+
+  // child.on('exit') in spawnAgent already deletes runningAgents and removes
+  // the pid file, but tolerate stragglers in case this is called against an
+  // entry whose listeners didn't fire (e.g. restored from disk in the future).
+  runningAgents.delete(upper);
+  const pidFile = path.join(SYMPHONY_ROOT, 'logs', `agent-pid-${upper}.pid`);
+  fs.rmSync(pidFile, { force: true });
+  log(chalk.green(`[${timestamp()}] ✓ Agent ${upper} stopped`));
+}
+
+/**
+ * Kill the running agent (if any) and immediately spawn a fresh session for
+ * the same ticket. Does not change ticket state.
+ */
+async function restartAgent(identifier: string): Promise<void> {
+  const upper = identifier.toUpperCase();
+  if (runningAgents.has(upper)) {
+    await killAgent(upper);
+  }
+  await forceResumeTicket(upper);
+}
+
+/**
  * Set up a readline-based interactive command handler on stdin.
  * Only active when stdin is a TTY (not piped/redirected).
  *
  * Commands:
  *   resume <id>   — force-open a session (e.g. resume WOR-53)
  *   r <id>        — shorthand for resume
+ *   kill <id>     — stop a running agent (alias: k)
+ *   restart <id>  — kill + resume (alias: rs)
  *   <id>          — bare ticket ID (e.g. WOR-53)
  *   help / h / ?  — show available commands
+ *
+ * stdin EIO/EAGAIN errors (e.g. child processes spawned with `stdio: 'inherit'`
+ * briefly stealing the TTY during hot reload) are swallowed so the poller
+ * stays alive. The readline interface is rebuilt after a fatal stream error
+ * so subsequent input keeps working.
  */
+let interactiveCommandsActive = false;
+let activeReadline: readline.Interface | null = null;
+let activeStdinErrorHandler: ((err: NodeJS.ErrnoException) => void) | null = null;
+
+function teardownInteractiveCommands(): void {
+  if (activeStdinErrorHandler) {
+    try { process.stdin.removeListener('error', activeStdinErrorHandler); } catch { /* ignore */ }
+    activeStdinErrorHandler = null;
+  }
+  if (activeReadline) {
+    try { activeReadline.removeAllListeners(); activeReadline.close(); } catch { /* ignore */ }
+    activeReadline = null;
+  }
+  interactiveCommandsActive = false;
+}
+
+async function handleInteractiveLine(line: string): Promise<void> {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+
+  const resumeMatch =
+    trimmed.match(/^(?:resume|r)\s+([A-Za-z]+-\d+)$/i) ??
+    trimmed.match(/^([A-Za-z]+-\d+)$/);
+
+  if (resumeMatch) {
+    await forceResumeTicket(resumeMatch[1]);
+    renderDashboard();
+    return;
+  }
+
+  const killMatch = trimmed.match(/^(?:kill|k)\s+([A-Za-z]+-\d+)$/i);
+  if (killMatch) {
+    await killAgent(killMatch[1]);
+    renderDashboard();
+    return;
+  }
+
+  const restartMatch = trimmed.match(/^(?:restart|rs)\s+([A-Za-z]+-\d+)$/i);
+  if (restartMatch) {
+    await restartAgent(restartMatch[1]);
+    renderDashboard();
+    return;
+  }
+
+  if (trimmed === 'help' || trimmed === 'h' || trimmed === '?') {
+    log(chalk.bold.white('Interactive commands:'));
+    log(`  ${chalk.cyan('resume <id>')}   Force-open a session  (e.g. ${chalk.cyan('resume WOR-53')})`);
+    log(`  ${chalk.cyan('r <id>')}        Shorthand for resume`);
+    log(`  ${chalk.cyan('kill <id>')}     Stop a running agent  (alias: ${chalk.cyan('k <id>')})`);
+    log(`  ${chalk.cyan('restart <id>')}  Stop and resume an agent  (alias: ${chalk.cyan('rs <id>')})`);
+    log(`  ${chalk.cyan('<id>')}          Bare ticket ID  (e.g. ${chalk.cyan('WOR-53')})`);
+    log(`  ${chalk.cyan('Ctrl+C')}        Shut down poller`);
+    renderDashboard();
+    return;
+  }
+
+  log(chalk.dim(`[symphony] Unknown command: "${trimmed}" — type "help" for commands`));
+  renderDashboard();
+}
+
 function setupInteractiveCommands(): void {
   if (!process.stdin.isTTY) return;
+  if (interactiveCommandsActive) return;
+  interactiveCommandsActive = true;
+
+  // Swallow transient stdin errors (EIO when a child with stdio: 'inherit'
+  // grabs the TTY, EAGAIN under load). Without this, the default 'error'
+  // listener on process.stdin/readline rethrows and kills the poller.
+  const onStdinError = (err: NodeJS.ErrnoException) => {
+    const code = err.code ?? '';
+    if (code === 'EIO' || code === 'EAGAIN') {
+      log(chalk.dim(`[symphony] stdin transient error ${code} — interactive commands rebuilding`));
+      // Tear down the current interface (close listeners, drop the error
+      // handler) before rebuilding, otherwise repeated EIO blips accumulate
+      // readline Interfaces and double-fire every typed command.
+      teardownInteractiveCommands();
+      setTimeout(() => setupInteractiveCommands(), 50);
+      return;
+    }
+    log(chalk.dim(`[symphony] stdin error: ${err.message}`));
+  };
+  activeStdinErrorHandler = onStdinError;
+  process.stdin.on('error', onStdinError);
 
   const rl = readline.createInterface({
     input: process.stdin,
     terminal: false, // don't echo or add readline's own prompt
   });
+  activeReadline = rl;
 
-  rl.on('line', async (line: string) => {
-    const trimmed = line.trim();
-    if (!trimmed) return;
-
-    const resumeMatch =
-      trimmed.match(/^(?:resume|r)\s+([A-Z]+-\d+)$/i) ??
-      trimmed.match(/^([A-Z]+-\d+)$/i);
-
-    if (resumeMatch) {
-      await forceResumeTicket(resumeMatch[1]);
-      renderDashboard();
-      return;
+  rl.on('error', (err: NodeJS.ErrnoException) => {
+    const code = err.code ?? '';
+    if (code !== 'EIO' && code !== 'EAGAIN') {
+      log(chalk.dim(`[symphony] readline error: ${err.message}`));
     }
+    // Stdin's own 'error' handler will trigger the rebuild.
+  });
 
-    if (trimmed === 'help' || trimmed === 'h' || trimmed === '?') {
-      log(chalk.bold.white('Interactive commands:'));
-      log(`  ${chalk.cyan('resume <id>')}  Force-open a session  (e.g. ${chalk.cyan('resume WOR-53')})`);
-      log(`  ${chalk.cyan('r <id>')}       Shorthand for resume`);
-      log(`  ${chalk.cyan('<id>')}         Bare ticket ID  (e.g. ${chalk.cyan('WOR-53')})`);
-      log(`  ${chalk.cyan('Ctrl+C')}       Shut down poller`);
-      renderDashboard();
-      return;
-    }
-
-    log(chalk.dim(`[symphony] Unknown command: "${trimmed}" — type "help" for commands`));
-    renderDashboard();
+  rl.on('line', (line: string) => {
+    handleInteractiveLine(line).catch((err) => {
+      log(chalk.red(`[symphony] Command failed: ${(err as Error).message}`));
+    });
   });
 
   // Don't let readline close the process when stdin ends
@@ -1349,6 +1478,15 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
     fs.rmSync(activePidFile, { force: true });
     const agent = runningAgents.get(ticket.identifier);
     runningAgents.delete(ticket.identifier);
+
+    if (agent?.userKilled) {
+      // User-invoked kill/restart — strictly session-only, never touch ticket
+      // state or retry counters. The exit handler's success branch otherwise
+      // races into moveToHumanReview because a SIGTERM exit has signal !=null.
+      log(chalk.yellow(`[${timestamp()}] ✋ Agent killed by user:`) + ` ${chalk.bold(ticket.identifier)}`);
+      renderDashboard();
+      return;
+    }
 
     if (isShuttingDown) {
       log(chalk.yellow(`[${timestamp()}] ⚠ Agent interrupted:`) + ` ${chalk.bold(ticket.identifier)}`);
@@ -1880,7 +2018,7 @@ if (HTML_MODE) {
 console.log('');
 console.log(
   chalk.dim(
-    `  ${chalk.white('resume <id>')} to force-open a session  •  ${chalk.white('help')} for commands  •  Ctrl+C to stop`
+    `  ${chalk.white('resume <id>')} / ${chalk.white('kill <id>')} / ${chalk.white('restart <id>')}  •  ${chalk.white('help')} for commands  •  Ctrl+C to stop`
   )
 );
 console.log('');
