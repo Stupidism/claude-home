@@ -1926,6 +1926,14 @@ async function poll(): Promise<void> {
       log,
     };
 
+    // Tickets whose entry-edge handler (rework / cancelled) ran but DEFERRED
+    // because an agent was still running. We must NOT mark these as
+    // `lastKnownState === 'rework' / 'cancelled'` below — if we did, the next
+    // cycle's edge guard would see `prevState === current` and skip the
+    // one-shot forever (Codex P1 on PR #49). Keeping the previous state lets
+    // the next cycle re-detect the edge and fire the deferred cleanup.
+    const deferredEdge = new Set<string>();
+
     const dispatch = async (state: StateKey, tickets: Issue[], throttleMs = 0): Promise<void> => {
       for (const issue of tickets) {
         let effect;
@@ -1934,6 +1942,9 @@ async function poll(): Promise<void> {
         } catch (err) {
           log(chalk.red(`[symphony] processTicket(${state}) error for ${issue.identifier}: ${err}`));
           continue;
+        }
+        if ((state === 'rework' || state === 'cancelled') && effect.kind === 'noop' && effect.reason === 'agent still running') {
+          deferredEdge.add(issue.identifier);
         }
         // Stop the whole batch the moment slots run out — every subsequent
         // ticket in this state would just no-op for the same reason. Don't
@@ -1982,12 +1993,21 @@ async function poll(): Promise<void> {
     // ran, so handlers receive the *previous* cycle's state via `prevState`
     // and can detect the prev→state edge. Once we've finished dispatch, we
     // snapshot the current cycle for the next one.
+    //
+    // Rework / cancelled are entry-edge states: we MUST skip persisting them
+    // for tickets whose one-shot got deferred (agent still running). Persisting
+    // would set `prevState === current` on the next cycle and the edge guard
+    // would skip cleanup forever — see `deferredEdge` above.
     for (const t of todoTickets) lastKnownState.set(t.identifier, 'todo');
     for (const t of inProgressTickets) lastKnownState.set(t.identifier, 'inProgress');
     for (const t of humanReviewTickets) lastKnownState.set(t.identifier, 'humanReview');
     for (const t of mergingTickets) lastKnownState.set(t.identifier, 'merging');
-    for (const t of reworkTickets) lastKnownState.set(t.identifier, 'rework');
-    for (const t of cancelledTickets) lastKnownState.set(t.identifier, 'cancelled');
+    for (const t of reworkTickets) {
+      if (!deferredEdge.has(t.identifier)) lastKnownState.set(t.identifier, 'rework');
+    }
+    for (const t of cancelledTickets) {
+      if (!deferredEdge.has(t.identifier)) lastKnownState.set(t.identifier, 'cancelled');
+    }
 
     await cleanupDoneWorktrees(allActiveIdentifiers, board);
   }

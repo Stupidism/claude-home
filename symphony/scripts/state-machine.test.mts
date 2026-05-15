@@ -396,6 +396,40 @@ for (const board of boards) {
     assert.deepEqual(calls, [], 'cleanup deferred until the agent exits');
   });
 
+  test(`[${board.name}] cancelled deferred-then-resolved still fires on the next cycle (Codex P1 on PR #49)`, async () => {
+    // Reproduces the regression flagged on the UP-775 PR: if the poller had
+    // persisted `cancelled` as the lastKnownState on the deferred cycle, the
+    // next cycle's edge guard would see `prevState === 'cancelled'` and skip
+    // cleanup forever. The poller MUST NOT advance prevState on a deferred
+    // edge — this test asserts the state-machine half of that contract:
+    // given the unchanged prevState, the next dispatch must fire.
+    const ticket = stubTicket(board.ticketPrefix, 134, 'cancelled', board);
+    // Cycle N — agent still running, dispatcher defers.
+    let agentRunning = true;
+    const { deps, calls } = makeDeps({ isAgentRunning: () => agentRunning });
+    const deferred = await processTicket('cancelled', ticket, board, deps, 'inProgress');
+    assert.deepEqual(deferred, { kind: 'noop', reason: 'agent still running' });
+    assert.deepEqual(calls, [], 'no cleanup on the deferred cycle');
+    // Cycle N+1 — agent exited; poller correctly kept prevState === 'inProgress'.
+    agentRunning = false;
+    const fired = await processTicket('cancelled', ticket, board, deps, 'inProgress');
+    assert.deepEqual(fired, { kind: 'cancelledCleanup' });
+    assert.deepEqual(fnNames(calls), ['cleanupCancelledTicket']);
+  });
+
+  test(`[${board.name}] rework deferred-then-resolved still fires on the next cycle (Codex P1 on PR #49)`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 135, 'rework', board);
+    let agentRunning = true;
+    const { deps, calls } = makeDeps({ isAgentRunning: () => agentRunning });
+    const deferred = await processTicket('rework', ticket, board, deps, 'inProgress');
+    assert.deepEqual(deferred, { kind: 'noop', reason: 'agent still running' });
+    assert.deepEqual(calls, []);
+    agentRunning = false;
+    const fired = await processTicket('rework', ticket, board, deps, 'inProgress');
+    assert.deepEqual(fired, { kind: 'resetRework' });
+    assert.deepEqual(fnNames(calls), ['resetReworkTicket']);
+  });
+
   test(`[${board.name}] inReview / backlog / done → no-op`, async () => {
     const states: StateKey[] = ['inReview', 'backlog', 'done'];
     for (const s of states) {
