@@ -28,7 +28,7 @@
  */
 
 import { setup } from 'xstate';
-import type { Issue, StateKey } from './ticket-systems/types.mts';
+import type { Issue, StateKey, StateKeys } from './ticket-systems/types.mts';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -41,7 +41,7 @@ export type SpawnMode = 'fresh' | 'continue' | 'feedback';
 export interface BoardRef {
   name: string;
   ticketPrefix: string;
-  states?: Record<StateKey, string>;
+  states?: StateKeys;
 }
 
 /**
@@ -61,6 +61,14 @@ export interface Deps<Board extends BoardRef = BoardRef> {
   spawnAgent(ticket: Issue, board: Board, mode: SpawnMode, forMerging?: boolean): void;
   resetReworkTicket(ticket: Issue, board: Board): Promise<void>;
   removeWorktree(ticket: Issue, board: Board): void;
+  /**
+   * One-shot cleanup for a ticket the human moved to a terminal cancelled
+   * state: close any open PR for the synthesized branch, remove the worktree,
+   * and leave a single audit comment. Fires exactly once per cancelled-edge
+   * transition — the dispatcher uses the `prevState` argument to suppress
+   * re-firing on every subsequent poll cycle (UP-775).
+   */
+  cleanupCancelledTicket(ticket: Issue, board: Board): Promise<void>;
 
   // GitHub / review checks
   areAllPRsMerged(ticket: Issue, board: Board): boolean;
@@ -93,7 +101,6 @@ export interface Deps<Board extends BoardRef = BoardRef> {
   isAgentRunning(identifier: string): boolean;
   agentSlotsAvailable(): number;
   failureCountFor(identifier: string): number;
-  lastKnownState(identifier: string): string | undefined;
   /**
    * If another running agent (i.e. for a different ticket identifier) already
    * occupies the worktree this ticket would spawn into, return the conflicting
@@ -121,7 +128,8 @@ export type Effect =
   | { kind: 'humanReviewWaitForApproval' }
   | { kind: 'humanReviewTriggerAI' }
   | { kind: 'humanReviewApproved' }
-  | { kind: 'resetRework' };
+  | { kind: 'resetRework' }
+  | { kind: 'cancelledCleanup' };
 
 export const MAX_RETRIES = 3;
 export const AI_REVIEW_LOCK_PREFIX = '[symphony] aiReviewRequested:';
@@ -147,7 +155,8 @@ export type TicketEvent =
   | { type: 'SPAWN_MERGING' }               // merging → merging (agent runs land skill)
   | { type: 'PR_MERGED' }                   // merging → done
   | { type: 'REWORK_REQUESTED' }            // any → rework (human moves the ticket)
-  | { type: 'REWORK_RESET' };               // rework → todo (after cleanup)
+  | { type: 'REWORK_RESET' }                // rework → todo (after cleanup)
+  | { type: 'CANCEL' };                     // any → cancelled (human abandons the ticket)
 
 export const ticketMachine = setup({
   types: {
@@ -158,12 +167,13 @@ export const ticketMachine = setup({
   initial: 'backlog',
   states: {
     backlog: {
-      on: { CLAIM: 'todo' },
+      on: { CLAIM: 'todo', CANCEL: 'cancelled' },
     },
     todo: {
       on: {
         CLAIM: 'inProgress',
         REWORK_REQUESTED: 'rework',
+        CANCEL: 'cancelled',
       },
     },
     inProgress: {
@@ -173,6 +183,7 @@ export const ticketMachine = setup({
         AGENT_EXHAUSTED: 'backlog',
         RESUME: 'inProgress',
         REWORK_REQUESTED: 'rework',
+        CANCEL: 'cancelled',
       },
     },
     humanReview: {
@@ -181,12 +192,14 @@ export const ticketMachine = setup({
         REVIEW_APPROVED: 'inReview',
         PR_MERGED_EARLY: 'done',
         REWORK_REQUESTED: 'rework',
+        CANCEL: 'cancelled',
       },
     },
     inReview: {
       on: {
         READY_TO_MERGE: 'merging',
         REWORK_REQUESTED: 'rework',
+        CANCEL: 'cancelled',
       },
     },
     merging: {
@@ -194,14 +207,19 @@ export const ticketMachine = setup({
         SPAWN_MERGING: 'merging',
         PR_MERGED: 'done',
         REWORK_REQUESTED: 'rework',
+        CANCEL: 'cancelled',
       },
     },
     rework: {
       on: {
         REWORK_RESET: 'todo',
+        CANCEL: 'cancelled',
       },
     },
     done: {
+      type: 'final',
+    },
+    cancelled: {
       type: 'final',
     },
   },
@@ -213,6 +231,19 @@ interface DispatchArgs<Board extends BoardRef> {
   ticket: Issue;
   board: Board;
   deps: Deps<Board>;
+  /**
+   * The Symphony `StateKey` the poller observed for this ticket on the
+   * previous cycle, or `null` if the poller has no memory of it (cold start,
+   * first time the identifier is seen, or persistence file missing).
+   *
+   * Used by handlers whose side effect is a one-shot action on entering a
+   * state (cancelled cleanup, rework reset). Comparing `state` vs `prevState`
+   * yields edge-triggered dispatch — the action fires only on the prev→state
+   * transition, not on every poll cycle that re-observes the same state.
+   * UP-775 introduced this primitive; before it, the dispatcher was purely
+   * level-triggered which re-fired one-shot effects every cycle.
+   */
+  prevState: StateKey | null;
 }
 
 async function handleTodo<B extends BoardRef>({ ticket, board, deps }: DispatchArgs<B>): Promise<Effect> {
@@ -228,7 +259,7 @@ async function handleTodo<B extends BoardRef>({ ticket, board, deps }: DispatchA
   return { kind: 'claim' };
 }
 
-async function handleInProgress<B extends BoardRef>({ ticket, board, deps }: DispatchArgs<B>): Promise<Effect> {
+async function handleInProgress<B extends BoardRef>({ ticket, board, deps, prevState }: DispatchArgs<B>): Promise<Effect> {
   if (!deps.isEligible(ticket, board)) return { kind: 'noop', reason: 'not eligible' };
   if (deps.isAgentRunning(ticket.identifier)) return { kind: 'noop', reason: 'agent already running' };
   if (deps.failureCountFor(ticket.identifier) >= MAX_RETRIES) {
@@ -238,8 +269,7 @@ async function handleInProgress<B extends BoardRef>({ ticket, board, deps }: Dis
   if (occupant) return { kind: 'noop', reason: `worktree busy (held by ${occupant})` };
   if (deps.agentSlotsAvailable() <= 0) return { kind: 'noop', reason: 'no agent slots' };
 
-  const prev = deps.lastKnownState(ticket.identifier);
-  const fromReview = prev === 'Human Review' || prev === 'In Review' || prev === 'Rework';
+  const fromReview = prevState === 'humanReview' || prevState === 'inReview' || prevState === 'rework';
   const mode: SpawnMode = fromReview ? 'feedback' : 'continue';
 
   deps.log(`Resuming (${mode}) ${ticket.identifier} — ${ticket.title}`);
@@ -339,10 +369,15 @@ async function handleMerging<B extends BoardRef>({ ticket, board, deps }: Dispat
   return { kind: 'spawnMergingAgent' };
 }
 
-async function handleRework<B extends BoardRef>({ ticket, board, deps }: DispatchArgs<B>): Promise<Effect> {
+async function handleRework<B extends BoardRef>({ ticket, board, deps, prevState }: DispatchArgs<B>): Promise<Effect> {
   if (!deps.isEligible(ticket, board)) return { kind: 'noop', reason: 'not eligible' };
   // Wait for a running agent to exit first; cleanup happens on the next poll cycle.
   if (deps.isAgentRunning(ticket.identifier)) return { kind: 'noop', reason: 'agent still running' };
+  // Edge guard: only reset on the prev→rework transition. Without this, a
+  // ticket that lingers in Rework because the reset itself failed (or because
+  // the human is mid-conversation in the workpad) would have resetReworkTicket
+  // re-fired every poll cycle, hammering git + the ticket API.
+  if (prevState === 'rework') return { kind: 'noop', reason: 'rework already reset on this entry' };
 
   try {
     await deps.resetReworkTicket(ticket, board);
@@ -350,6 +385,23 @@ async function handleRework<B extends BoardRef>({ ticket, board, deps }: Dispatc
     deps.log(`Error resetting rework ticket ${ticket.identifier}: ${err}`);
   }
   return { kind: 'resetRework' };
+}
+
+async function handleCancelled<B extends BoardRef>({ ticket, board, deps, prevState }: DispatchArgs<B>): Promise<Effect> {
+  // Edge-triggered: cleanup runs exactly once, on the prev→cancelled transition.
+  // On subsequent cycles the ticket is still "Cancelled" in the ticket system,
+  // but we must not re-close the PR or re-post the audit comment.
+  if (prevState === 'cancelled') return { kind: 'noop', reason: 'cancelled already cleaned up' };
+  if (!deps.isEligible(ticket, board)) return { kind: 'noop', reason: 'not eligible' };
+  if (deps.isAgentRunning(ticket.identifier)) return { kind: 'noop', reason: 'agent still running' };
+
+  deps.log(`Cancelled — cleaning up ${ticket.identifier}`);
+  try {
+    await deps.cleanupCancelledTicket(ticket, board);
+  } catch (err) {
+    deps.log(`Error cleaning up cancelled ticket ${ticket.identifier}: ${err}`);
+  }
+  return { kind: 'cancelledCleanup' };
 }
 
 // ── Public dispatcher ─────────────────────────────────────────────────────────
@@ -365,13 +417,16 @@ export async function processTicket<B extends BoardRef>(
   ticket: Issue,
   board: B,
   deps: Deps<B>,
+  prevState: StateKey | null = null,
 ): Promise<Effect> {
+  const args = { ticket, board, deps, prevState };
   switch (state) {
-    case 'todo':         return handleTodo({ ticket, board, deps });
-    case 'inProgress':   return handleInProgress({ ticket, board, deps });
-    case 'humanReview':  return handleHumanReview({ ticket, board, deps });
-    case 'merging':      return handleMerging({ ticket, board, deps });
-    case 'rework':       return handleRework({ ticket, board, deps });
+    case 'todo':         return handleTodo(args);
+    case 'inProgress':   return handleInProgress(args);
+    case 'humanReview':  return handleHumanReview(args);
+    case 'merging':      return handleMerging(args);
+    case 'rework':       return handleRework(args);
+    case 'cancelled':    return handleCancelled(args);
     case 'inReview':     return { kind: 'noop', reason: 'inReview — waiting for human to move to merging' };
     case 'backlog':      return { kind: 'noop', reason: 'backlog — not actionable' };
     case 'done':         return { kind: 'noop', reason: 'done — terminal' };

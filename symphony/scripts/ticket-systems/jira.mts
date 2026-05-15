@@ -114,6 +114,10 @@ function escapeJql(value: string): string {
 export const jiraAdapter: TicketSystemAdapter = {
   async fetchTicketsByState(board, stateKey: StateKey, assigneeId) {
     const statusName = jiraOf(board).states[stateKey];
+    // Boards may legitimately omit optional states (e.g. `cancelled`). Skip
+    // the network call entirely when the board has no mapping — issuing a
+    // `status = "undefined"` JQL would just return zero issues anyway.
+    if (!statusName) return [];
     const clauses = [
       `project = "${escapeJql(board.teamId)}"`,
       `status = "${escapeJql(statusName)}"`,
