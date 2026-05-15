@@ -11,7 +11,7 @@ Treat this as a **full approach reset** — not incremental patching:
 
 1. Re-read the full issue body and all Human Review comments; explicitly identify what will be done differently
 2. Close the existing PR: `gh pr close <PR_NUMBER>`
-3. Remove the existing `## Claude Workpad` comment via the Linear API (read `$SKILLS_ROOT/linear/SKILL.md`)
+3. Remove the existing `## Claude Workpad` comment via the ticket dispatcher (read `$SKILLS_ROOT/ticket/SKILL.md` — it routes to `linear` or `jira` based on `$TICKET_SYSTEM`)
 4. Create a fresh branch from `origin/master` (read `$SKILLS_ROOT/setup-worktree/SKILL.md`)
 5. Start over from Step 1 (Read & Plan) with a new workpad
 

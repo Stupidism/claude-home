@@ -1,6 +1,6 @@
 ---
 name: linear
-description: All Linear API operations for Linear tickets — state transitions, workpad comment create/update/read, and the ticket format reference. Read this whenever you need to interact with Linear.
+description: Linear ticket operations — workpad CRUD, state transitions, comment listing, and the ticket format reference. Loaded by the ticket dispatcher when `$TICKET_SYSTEM=linear`. Do not load directly — go through `$SKILLS_ROOT/ticket/SKILL.md`.
 ---
 
 # Linear Operations

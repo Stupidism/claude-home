@@ -19,7 +19,7 @@
 > - **$WORK_PREFERRED_LANGUAGE**：一切进入仓库或工单系统的内容 — 代码注释、commit 消息、PR 标题/正文、工单评论、workpad 条目。
 > - 任何情况下都不得使用 $NEVER_USE_LANGUAGE。
 >
-> **工单系统：** 所有 Linear 操作优先使用 `mcp__linear-server__*` MCP 工具（更省 token）；仅当 MCP 工具在当前会话不可用时才回退到 curl。详见 `$SKILLS_ROOT/linear/SKILL.md`。**如果获取工单失败，立即停止并报告错误 — 不得根据标题或代码库猜测需求。**
+> **工单系统：** 通过 `$SKILLS_ROOT/ticket/SKILL.md` 调度器路由 — Linear (`WOR-*`) 走 `linear/SKILL.md`、Jira (`UP-*`) 走 `jira/SKILL.md`。两边都优先使用对应的 MCP 工具（`mcp__linear-server__*` 或 `mcp__mcp-atlassian__jira_*`），仅当 MCP 工具在当前会话不可用时才回退到 curl。**如果获取工单失败，立即停止并报告错误 — 不得根据标题或代码库猜测需求。**
 >
 > **自治模式：** 永远不要让人类跟进。使用 `$SKILLS_ROOT/commit/SKILL.md` 和 `$SKILLS_ROOT/create-pr/SKILL.md`。
 >

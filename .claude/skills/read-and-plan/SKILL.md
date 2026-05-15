@@ -113,7 +113,7 @@ After the Figma audit (or, if no Figma, after reading the ticket), estimate the 
 
 Find or create the single persistent **Claude Workpad** comment on the ticket.
 
-- Read `$SKILLS_ROOT/linear/SKILL.md` for the workpad template and API commands
+- Read `$SKILLS_ROOT/ticket/SKILL.md` — the dispatcher will route to the right sub-skill (`linear` or `jira`) for the workpad template and API commands
 
 **Rules:**
 
