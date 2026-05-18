@@ -36,19 +36,28 @@ Pull these fields:
 | `teamId` | `boards/<x>.json` (Linear) | Linear `teamId` |
 | `assigneeId` | `boards/<x>.json` → fallback `symphony.json` | who to assign to so the poller actually picks it up |
 | `assigneeEmail` | `boards/<x>.json` (Jira only) | the **email** to pass to `jira_update_issue` — see Step 4 |
-| `states.todo` | `boards/<x>.json` (Linear UUID) / `"To Do"` (Jira name) | initial state |
+| `states.backlog` | `boards/<x>.json` (Linear UUID) / `"Backlog"` (Jira name) | initial state — see Step 3 for why |
+| `transitions.backlog` | `boards/<x>.json` (Jira only) | transition ID to apply on creation (Jira defaults new issues to "To Do") |
 
 ### 3. Create the ticket
 
+**Default state: Backlog**, NOT Todo. The user wants to review new tickets before letting the poller pick them up. Todo tickets get claimed by the poller within one poll cycle (30s), which leaves no room to revise the description, attach context, or hold the ticket back. Backlog is poller-invisible — the user manually moves it to Todo when ready. Only override to Todo when the user explicitly says "建好后直接开跑" / "let the poller take it" / similar.
+
 **Jira (UP):**
 
+Jira always creates new issues in "To Do" regardless of what you ask for, so you MUST also pass a `transition` to move it to Backlog in the same call.
+
 ```text
-mcp__mcp-atlassian__jira_create_issue
-  project_key       = ticketPrefix (uppercase)
-  summary           = <user-provided title>
-  issue_type        = "Task"   # or "Bug" if user explicitly says it's a bug
-  description       = <markdown body — Jira MCP converts to wiki syntax>
-  additional_fields = { "labels": ["project:symphony"] }   # only if this is symphony work
+mcp__claude_ai_Atlassian__createJiraIssue
+  cloudId              = <from getAccessibleAtlassianResources>
+  projectKey           = ticketPrefix (uppercase)
+  summary              = <user-provided title>
+  issueTypeName        = "Task"   # or "Bug" if user explicitly says it's a bug
+  description          = <markdown body>
+  contentFormat        = "markdown"
+  assignee_account_id  = <assigneeId from board config>
+  transition           = { "id": "<transitions.backlog from board config>" }   # e.g. "101" for UP
+  additional_fields    = { "labels": ["project:symphony"] }   # only if this is symphony work
 ```
 
 **Linear (WOR):**
@@ -59,7 +68,7 @@ mcp__linear-server__create_issue
   title      = <user-provided title>
   description= <markdown body>
   assignee   = assigneeId
-  state      = "Todo"
+  state      = "Backlog"
   labels     = ["project:symphony"]   # only if this is symphony work
 ```
 
@@ -116,6 +125,6 @@ For Jira, write in plain markdown — the MCP converts to wiki syntax automatica
 ## Common pitfalls (the why behind the verify step)
 
 - **Jira `assignee` dropped on create** — confirmed empirically; must follow up with `jira_update_issue` using **email**, then `jira_get_issue` to verify. AccountId formats look like they succeed but leave the issue Unassigned (see Step 4).
-- **Wrong state name** — Jira UP uses `"To Do"` (with space), not `"Todo"`. Linear uses `"Todo"`. Read the config; don't assume.
+- **Jira default state is "To Do", not Backlog** — `createJiraIssue` always lands in "To Do" first, regardless of what you pass. To start in Backlog (the desired default), pass `transition: { id: "<transitions.backlog>" }` in the create call itself. Don't try to fix via `editJiraIssue` after — Jira uses workflow transitions, not direct status edits. Verify via `getJiraIssue` that `status.name == "Backlog"` before reporting success.
 - **Missing `project:symphony` label** — without it, dashboards filtering by label won't see the ticket. Always add for symphony work.
 - **Wrong assigneeId for the board** — `symphony.json` has a Linear UUID; `boards/up.json` has a Jira accountId. Don't cross them. (And even on Jira, accountId only goes into the *config*, not into the assign API call — see above.)
