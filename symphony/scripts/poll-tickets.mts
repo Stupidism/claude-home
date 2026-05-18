@@ -41,6 +41,8 @@ import {
   processTicket,
   AI_REVIEW_LOCK_PREFIX,
   APPROVAL_LOCK_PREFIX,
+  NEEDS_NOTIFY_LABEL,
+  REVIEW_NOTIFIED_LABEL,
   MAX_RETRIES as STATE_MACHINE_MAX_RETRIES,
   type Deps as StateMachineDeps,
   type SpawnMode,
@@ -600,7 +602,21 @@ async function resetReworkTicket(issue: Issue, board: BoardConfig): Promise<void
     }
   } catch { /* best-effort */ }
 
-  // 3. Remove local worktree (best-effort)
+  // 3. Clear notify labels so the next Human Review cycle can re-notify (best-effort).
+  //    Without this, a ticket sent through Rework would carry `review-notified`
+  //    forward — and the next Human Review pass would see both labels present
+  //    and skip notify forever.
+  try {
+    const adapter = getAdapter(board);
+    if (adapter.hasLabel(issue, REVIEW_NOTIFIED_LABEL)) {
+      await adapter.removeLabel(board, issue.id, REVIEW_NOTIFIED_LABEL);
+    }
+    if (adapter.hasLabel(issue, NEEDS_NOTIFY_LABEL)) {
+      await adapter.removeLabel(board, issue.id, NEEDS_NOTIFY_LABEL);
+    }
+  } catch { /* best-effort */ }
+
+  // 4. Remove local worktree (best-effort)
   try {
     if (fs.existsSync(worktreePath)) {
       const removeResult = child_process.spawnSync('git', ['worktree', 'remove', '--force', worktreePath], { encoding: 'utf8', cwd: repoPath });
@@ -613,7 +629,7 @@ async function resetReworkTicket(issue: Issue, board: BoardConfig): Promise<void
     }
   } catch { /* best-effort */ }
 
-  // 4. Move ticket back to Todo — next poll cycle picks it up fresh
+  // 5. Move ticket back to Todo — next poll cycle picks it up fresh
   await moveToTodo(board, issue.id, identifier);
 }
 
@@ -1039,8 +1055,10 @@ async function forceResumeTicket(identifier: string): Promise<void> {
   // Resume is a pure claude-session operation: never mutate ticket state here.
   // The state-machine handles transitions when the agent runs.
 
-  // Use feedback mode when coming from a review state so the agent reads all comments
-  const fromReview = stateName === 'Human Review' || stateName === 'Rework';
+  // Use feedback mode when coming from a review state so the agent reads all comments.
+  // 'In Review' is included as a rollout fallback — UP-782 removes the state from the
+  // workflow, but legacy tickets parked in it must still resume in feedback mode.
+  const fromReview = stateName === 'Human Review' || stateName === 'In Review' || stateName === 'Rework';
   const mode: SpawnMode = fromReview ? 'feedback' : 'continue';
 
   spawnAgent(ticket, board, mode);
