@@ -41,6 +41,8 @@ import {
   processTicket,
   AI_REVIEW_LOCK_PREFIX,
   APPROVAL_LOCK_PREFIX,
+  NEEDS_NOTIFY_LABEL,
+  REVIEW_NOTIFIED_LABEL,
   MAX_RETRIES as STATE_MACHINE_MAX_RETRIES,
   type Deps as StateMachineDeps,
   type SpawnMode,
@@ -544,8 +546,8 @@ const moveToHumanReview = (b: BoardConfig, id: string, ident: string) =>
   moveToState(b, id, ident, 'humanReview', 'Human Review', chalk.magenta);
 const moveToDone = (b: BoardConfig, id: string, ident: string) =>
   moveToState(b, id, ident, 'done', 'Done ✓', chalk.green);
-const moveToInReview = (b: BoardConfig, id: string, ident: string) =>
-  moveToState(b, id, ident, 'inReview', 'In Review', chalk.blue);
+const moveToMerging = (b: BoardConfig, id: string, ident: string) =>
+  moveToState(b, id, ident, 'merging', 'Merging', chalk.blue);
 const moveToTodo = (b: BoardConfig, id: string, ident: string) =>
   moveToState(b, id, ident, 'todo', 'Todo (reset from Rework)', chalk.cyan);
 
@@ -600,7 +602,21 @@ async function resetReworkTicket(issue: Issue, board: BoardConfig): Promise<void
     }
   } catch { /* best-effort */ }
 
-  // 3. Remove local worktree (best-effort)
+  // 3. Clear notify labels so the next Human Review cycle can re-notify (best-effort).
+  //    Without this, a ticket sent through Rework would carry `review-notified`
+  //    forward — and the next Human Review pass would see both labels present
+  //    and skip notify forever.
+  try {
+    const adapter = getAdapter(board);
+    if (adapter.hasLabel(issue, REVIEW_NOTIFIED_LABEL)) {
+      await adapter.removeLabel(board, issue.id, REVIEW_NOTIFIED_LABEL);
+    }
+    if (adapter.hasLabel(issue, NEEDS_NOTIFY_LABEL)) {
+      await adapter.removeLabel(board, issue.id, NEEDS_NOTIFY_LABEL);
+    }
+  } catch { /* best-effort */ }
+
+  // 4. Remove local worktree (best-effort)
   try {
     if (fs.existsSync(worktreePath)) {
       const removeResult = child_process.spawnSync('git', ['worktree', 'remove', '--force', worktreePath], { encoding: 'utf8', cwd: repoPath });
@@ -613,7 +629,7 @@ async function resetReworkTicket(issue: Issue, board: BoardConfig): Promise<void
     }
   } catch { /* best-effort */ }
 
-  // 4. Move ticket back to Todo — next poll cycle picks it up fresh
+  // 5. Move ticket back to Todo — next poll cycle picks it up fresh
   await moveToTodo(board, issue.id, identifier);
 }
 
@@ -1000,7 +1016,7 @@ function boardForIdentifier(identifier: string): BoardConfig | null {
  * current ticket-system state. Session-only: this never mutates the ticket
  * — the state-machine handles transitions while the agent runs.
  *   - Already running → no-op (logged)
- *   - Human Review / In Review / Rework → spawns in feedback mode
+ *   - Human Review / Rework → spawns in feedback mode
  *   - Any other state → spawns in continue mode
  */
 async function forceResumeTicket(identifier: string): Promise<void> {
@@ -1039,7 +1055,9 @@ async function forceResumeTicket(identifier: string): Promise<void> {
   // Resume is a pure claude-session operation: never mutate ticket state here.
   // The state-machine handles transitions when the agent runs.
 
-  // Use feedback mode when coming from a review state so the agent reads all comments
+  // Use feedback mode when coming from a review state so the agent reads all comments.
+  // 'In Review' is included as a rollout fallback — UP-782 removes the state from the
+  // workflow, but legacy tickets parked in it must still resume in feedback mode.
   const fromReview = stateName === 'Human Review' || stateName === 'In Review' || stateName === 'Rework';
   const mode: SpawnMode = fromReview ? 'feedback' : 'continue';
 
@@ -1333,7 +1351,7 @@ const failureCounts = new Map<string, number>();
 const lastKnownState = new Map<string, StateKey>();
 const LAST_OBSERVED_FILE = path.join(SYMPHONY_ROOT, 'state', 'last-observed.json');
 const VALID_STATE_KEYS: ReadonlySet<StateKey> = new Set([
-  'backlog', 'todo', 'inProgress', 'humanReview', 'inReview', 'rework', 'merging', 'done', 'cancelled',
+  'backlog', 'todo', 'inProgress', 'humanReview', 'rework', 'merging', 'done', 'cancelled',
 ]);
 
 function loadLastObservedState(): void {
@@ -1495,7 +1513,6 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
     STATE_TODO: statesFor(board).todo,
     STATE_IN_PROGRESS: statesFor(board).inProgress,
     STATE_HUMAN_REVIEW: statesFor(board).humanReview,
-    STATE_IN_REVIEW: statesFor(board).inReview,
     STATE_REWORK: statesFor(board).rework,
     STATE_MERGING: statesFor(board).merging,
     STATE_DONE: statesFor(board).done,
@@ -1694,6 +1711,10 @@ async function checkHumanReviewApproval(issue: Issue, board: BoardConfig) {
 
 async function postComment(board: BoardConfig, issueId: string, body: string): Promise<void> {
   await getAdapter(board).postComment(board, issueId, body);
+}
+
+async function addLabel(board: BoardConfig, issueId: string, label: string): Promise<void> {
+  await getAdapter(board).addLabel(board, issueId, label);
 }
 
 function spawnNotifyReview(issue: Issue, board: BoardConfig, prUrl: string): Promise<string | null> {
@@ -1905,7 +1926,7 @@ async function poll(): Promise<void> {
     const deps: StateMachineDeps<BoardConfig> = {
       moveToInProgress,
       moveToHumanReview,
-      moveToInReview,
+      moveToMerging,
       moveToTodo,
       moveToDone,
       spawnAgent,
@@ -1918,6 +1939,7 @@ async function poll(): Promise<void> {
       postComment,
       spawnAIReview,
       spawnNotifyReview,
+      addLabel,
       isAgentRunning: (id) => runningAgents.has(id),
       agentSlotsAvailable: () => Math.max(0, MAX_CONCURRENT - runningAgents.size),
       failureCountFor: (id) => failureCounts.get(id) ?? 0,
@@ -2035,10 +2057,10 @@ async function poll(): Promise<void> {
       continue;
     }
     const deps: StateMachineDeps<BoardConfig> = {
-      moveToInProgress, moveToHumanReview, moveToInReview, moveToTodo, moveToDone,
+      moveToInProgress, moveToHumanReview, moveToMerging, moveToTodo, moveToDone,
       spawnAgent, resetReworkTicket, removeWorktree, cleanupCancelledTicket,
       areAllPRsMerged, isPRUrlMerged,
-      checkHumanReviewApproval, postComment, spawnAIReview, spawnNotifyReview,
+      checkHumanReviewApproval, postComment, spawnAIReview, spawnNotifyReview, addLabel,
       isAgentRunning: (id) => runningAgents.has(id),
       agentSlotsAvailable: () => Math.max(0, MAX_CONCURRENT - runningAgents.size),
       failureCountFor: (id) => failureCounts.get(id) ?? 0,

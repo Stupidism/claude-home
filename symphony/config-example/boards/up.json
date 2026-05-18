@@ -15,7 +15,6 @@
       "todo": "To Do",
       "inProgress": "In Progress",
       "humanReview": "Human Review",
-      "inReview": "In Review",
       "rework": "Rework",
       "merging": "Merging",
       "done": "Done"
@@ -25,7 +24,6 @@
       "todo": "YOUR_TRANSITION_ID_TODO",
       "inProgress": "YOUR_TRANSITION_ID_IN_PROGRESS",
       "humanReview": "YOUR_TRANSITION_ID_HUMAN_REVIEW",
-      "inReview": "YOUR_TRANSITION_ID_IN_REVIEW",
       "rework": "YOUR_TRANSITION_ID_REWORK",
       "merging": "YOUR_TRANSITION_ID_MERGING",
       "done": "YOUR_TRANSITION_ID_DONE"

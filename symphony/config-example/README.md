@@ -70,7 +70,6 @@ Common fields at the top level:
       "todo":        "<uuid>",
       "inProgress":  "<uuid>",
       "humanReview": "<uuid>",
-      "inReview":    "<uuid>",
       "rework":      "<uuid>",
       "merging":     "<uuid>",
       "done":        "<uuid>"
@@ -92,7 +91,6 @@ Common fields at the top level:
       "todo":        "To Do",
       "inProgress":  "In Progress",
       "humanReview": "Human Review",
-      "inReview":    "In Review",
       "rework":      "Rework",
       "merging":     "Merging",
       "done":        "Done"
@@ -102,7 +100,6 @@ Common fields at the top level:
       "todo":        "<numeric transition id>",
       "inProgress":  "<numeric transition id>",
       "humanReview": "<numeric transition id>",
-      "inReview":    "<numeric transition id>",
       "rework":      "<numeric transition id>",
       "merging":     "<numeric transition id>",
       "done":        "<numeric transition id>"
