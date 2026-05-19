@@ -1,27 +1,34 @@
 ---
 name: cleanup-tickets
-description: Sweep local worktrees and branches across all repos, detect merged PRs, move tickets to Done, and delete stale local/remote branches. Run this to recover from tickets stuck in Merging or to bulk-clean up after a sprint.
+description: Sweep local worktrees and branches across all repos, detect merged PRs, transition tickets to Done, and delete stale local/remote branches. Run this to recover from tickets stuck in Merging or to bulk-clean up after a sprint. Works against both Linear (`WOR-*`) and Jira (`UP-*`) boards via the ticket dispatcher.
 ---
 
 # Cleanup Tickets
 
-Scans all repos for local branches/worktrees that contain a ticket ID, checks their PR and Linear state, and cleans up anything that has already been merged.
+Scans all repos for local branches/worktrees that contain a ticket ID, checks each ticket's state and PR state, and cleans up anything that has already been merged.
 
-> **When to use:** After a batch of PRs were merged without Symphony detecting them (e.g. Linear wasn't connected to GitHub, or the poller was down), run this skill to reconcile state.
+> **When to use:** After a batch of PRs were merged without Symphony detecting them (e.g. the ticket system wasn't connected to GitHub, or the poller was down), run this skill to reconcile state.
+
+All ticket reads/writes go through `$SKILLS_ROOT/ticket/SKILL.md` — do not call Linear or Jira APIs directly. The dispatcher routes to the matching sub-skill based on each board's `ticketSystem`.
 
 ---
 
 ## Step 1 — Load board configs
 
-Read all board config files to get the repo list:
+Read every board config to get the repo list and the ticket system for each board:
 
 ```bash
 ls $SYMPHONY_ROOT/config/boards/
 ```
 
-For each board config (e.g. `wor.json`), note the `repos[]` array — each entry has `path`, `worktreesDir`, `defaultBranch`, and `github`.
+For each board config (e.g. `wor.json`, `up.json`), note:
 
-Also note the board's `states.done` UUID for Linear transitions.
+- `ticketPrefix` (e.g. `WOR`, `UP`) — used to match branch names and to set the per-board `$TICKET_SYSTEM` when invoking the dispatcher
+- `ticketSystem` — `linear` or `jira`
+- `repos[]` — each entry has `path`, `worktreesDir`, `defaultBranch`, `githubRepo`
+- The `Done` state identifier: `linear.states.done` (Linear UUID) or `jira.states.done` + `jira.transitions.done` (Jira name and numeric transition ID)
+
+Export `TICKET_SYSTEM` to match the board you are processing before each ticket-system call — the dispatcher reads it.
 
 ---
 
@@ -35,7 +42,7 @@ For each repo in the board, collect branches in two ways:
 ls "$WORKTREES_DIR" 2>/dev/null
 ```
 
-Match folder names like `feat--WOR-XX-*` or `fix--WOR-XX-*`. Extract the ticket identifier (e.g. `WOR-44`).
+Match folder names like `feat--<PREFIX>-XX-*` or `fix--<PREFIX>-XX-*` (use the board's `ticketPrefix`). Extract the ticket identifier (e.g. `WOR-44`, `UP-789`).
 
 ### 2b — Local git branches
 
@@ -51,32 +58,14 @@ Deduplicate — a ticket may appear in both lists.
 
 ## Step 3 — For each candidate ticket, check state
 
-### 3a — Check Linear ticket state
+### 3a — Check ticket state through the dispatcher
 
-```bash
-node << 'EOF'
-const https = require('https');
-const ticketId = process.env.TICKET_ID;
-const body = JSON.stringify({
-  query: `{ issue(id: "${ticketId}") { id state { name } title } }`
-});
-const req = https.request({
-  hostname: 'api.linear.app', path: '/graphql', method: 'POST',
-  headers: { Authorization: process.env.LINEAR_API_KEY, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-}, (res) => {
-  let d = ''; res.on('data', c => d += c);
-  res.on('end', () => {
-    const r = JSON.parse(d);
-    const issue = r.data?.issue;
-    if (!issue) { console.log('NOT_FOUND'); return; }
-    console.log(issue.state.name);
-  });
-});
-req.write(body); req.end();
-EOF
-```
+Set `TICKET_ID` to the candidate, set `TICKET_SYSTEM` to the matching board's `ticketSystem`, then read `$SKILLS_ROOT/ticket/SKILL.md` and follow the sub-skill's "Get ticket details" intent:
 
-Skip tickets already in **Done** state — they just need worktree cleanup (Step 4), no Linear update needed.
+- **Linear** → `mcp__linear-server__get_issue id=$TICKET_ID` (curl fallback in `$SKILLS_ROOT/linear/SKILL.md`)
+- **Jira** → `mcp__mcp-atlassian__jira_get_issue issue_key=$TICKET_ID` (curl fallback in `$SKILLS_ROOT/jira/SKILL.md`)
+
+Skip tickets already in **Done** state — they just need worktree cleanup (Step 4), no ticket update needed.
 
 ### 3b — Check GitHub PR state
 
@@ -98,46 +87,20 @@ If an open PR exists, skip this ticket — it is still in active review.
 
 ## Step 4 — Act based on state
 
-| Linear state | PR state  | Action                                      |
-|-------------|-----------|---------------------------------------------|
-| Done        | any       | Clean up worktree + local branch only       |
-| Merging     | merged    | Move ticket to Done, clean up worktree + branch |
-| In Review   | merged    | Move ticket to Done, clean up worktree + branch |
-| any         | merged    | Move ticket to Done, clean up worktree + branch |
-| any         | not merged| Skip — ticket is still active               |
+| Ticket state | PR state   | Action                                          |
+|--------------|-----------|-------------------------------------------------|
+| Done         | any       | Clean up worktree + local branch only           |
+| Merging      | merged    | Move ticket to Done, clean up worktree + branch |
+| In Review    | merged    | Move ticket to Done, clean up worktree + branch |
+| any          | merged    | Move ticket to Done, clean up worktree + branch |
+| any          | not merged| Skip — ticket is still active                   |
 
 ### Move ticket to Done
 
-```bash
-node << 'EOF'
-const https = require('https');
-// Step 1: get UUID
-const getBody = JSON.stringify({ query: `{ issue(id: "${process.env.TICKET_ID}") { id } }` });
-const req = https.request({
-  hostname: 'api.linear.app', path: '/graphql', method: 'POST',
-  headers: { Authorization: process.env.LINEAR_API_KEY, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(getBody) }
-}, (res) => {
-  let d = ''; res.on('data', c => d += c);
-  res.on('end', () => {
-    const uuid = JSON.parse(d).data?.issue?.id;
-    if (!uuid) { console.error('UUID not found'); return; }
-    // Step 2: update state
-    const updateBody = JSON.stringify({
-      query: `mutation { issueUpdate(id: "${uuid}", input: { stateId: "${process.env.STATE_DONE}" }) { success } }`
-    });
-    const req2 = https.request({
-      hostname: 'api.linear.app', path: '/graphql', method: 'POST',
-      headers: { Authorization: process.env.LINEAR_API_KEY, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(updateBody) }
-    }, (res2) => {
-      let d2 = ''; res2.on('data', c => d2 += c);
-      res2.on('end', () => console.log(JSON.parse(d2).data?.issueUpdate?.success ? 'Moved to Done' : 'Failed'));
-    });
-    req2.write(updateBody); req2.end();
-  });
-});
-req.write(getBody); req.end();
-EOF
-```
+Read `$SKILLS_ROOT/ticket/SKILL.md` and pass the symbolic state `Done` (or `$STATE_DONE`, which holds the system-specific identifier — Linear UUID or Jira status name) to the matching sub-skill:
+
+- **Linear** → `mcp__linear-server__update_issue id=$TICKET_ID state="Done"`
+- **Jira** → list transitions via `mcp__mcp-atlassian__jira_get_transitions`, pick the one whose target status name matches `Done`, then `mcp__mcp-atlassian__jira_transition_issue`. The numeric transition ID is also cached in the board config under `jira.transitions.done`.
 
 ### Clean up worktree
 
@@ -164,7 +127,7 @@ Ticket   | Repo           | Action taken
 ---------|----------------|---------------------------
 WOR-44   | claude-home    | Moved to Done, cleaned up
 WOR-52   | workstream-hr  | Already Done, cleaned up
-WOR-69   | claude-home    | Moved to Done, cleaned up
+UP-789   | workstream-mono| Moved to Done, cleaned up
 WOR-XX   | ...            | Skipped (PR not merged)
 ```
 
@@ -178,20 +141,17 @@ If you want to target only specific branches (e.g. from the ticket's AC list), s
 BRANCHES=(
   "feat/WOR-44-linear-template-skill"
   "feat/WOR-52-ai-code-review-should-respect-the-board"
-  "feat/WOR-53-interactive-resume-command"
-  "feat/WOR-61-generalize-claude-home"
-  "feat/WOR-67-prepare-a-ppt-about-introducing-symphony"
-  "feat/WOR-69-ticket-sweep-comments"
+  "feat/UP-789-symphony-poller-sigkill-claude-nx-daemon"
 )
 ```
 
-Then run Steps 3–4 for each branch, looking up the ticket ID from the branch name (the part after `feat/` up to the second `-`).
+Then run Steps 3–4 for each branch, looking up the ticket ID from the branch name (the part after `feat/` up to the second `-`). Resolve the matching board from the prefix to pick the right `ticketSystem` before the ticket-system call.
 
 ---
 
 ## Notes
 
-- This skill is safe to run multiple times — it skips tickets already in Done state
-- Always prefer `--force` when removing worktrees (they contain `.claude-session-id` which is untracked by design)
-- If a worktree directory is missing but the git reference still exists, `git worktree prune` cleans it up
-- If `$STATE_DONE` is not set in environment, look it up from `$SYMPHONY_ROOT/config/boards/<board>.json`
+- This skill is safe to run multiple times — it skips tickets already in Done state.
+- Always prefer `--force` when removing worktrees (they contain `.claude-session-id` which is untracked by design).
+- If a worktree directory is missing but the git reference still exists, `git worktree prune` cleans it up.
+- If `$STATE_DONE` is not set in the environment (the env vars are only set when the poller spawned the session), look it up from `$SYMPHONY_ROOT/config/boards/<board>.json` — `linear.states.done` for Linear boards, `jira.states.done` and `jira.transitions.done` for Jira boards.
