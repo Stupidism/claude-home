@@ -149,7 +149,7 @@ interface BoardConfig {
   /** Board-level GitHub overrides — deep-merged on top of global symphony.github. */
   github?: GithubConfig;
   defaultRepo: string;
-  /** Agent runtime to use when a ticket has no `runtime:<name>` label.
+  /** Agent runtime to use when a ticket has no `agent:<name>` label.
    *  "claude" (default) spawns claude with the existing session/remote-control
    *  plumbing. "codex" spawns the codex CLI directly without pty/session files. */
   defaultRuntime?: AgentRuntime;
@@ -159,18 +159,18 @@ interface BoardConfig {
 
 type AgentRuntime = 'claude' | 'codex';
 
-const RUNTIME_LABEL_PREFIX = 'runtime:';
+const AGENT_LABEL_PREFIX = 'agent:';
 
 /** Pick the runtime for a ticket. Resolution order, highest priority first:
- *    1. ticket label `runtime:<name>` (per-ticket override)
+ *    1. ticket label `agent:<name>` (per-ticket override)
  *    2. board `defaultRuntime` (per-board override)
  *    3. global `symphony.json` `defaultRuntime` (per-machine default)
  *    4. built-in `"claude"`
- *  Unknown values throw — typos like `runtime:Codex` should not silently fall back. */
+ *  Unknown values throw — typos like `agent:Codex` should not silently fall back. */
 function runtimeFor(ticket: Issue, board: BoardConfig): AgentRuntime {
-  const label = ticket.labels.find((l) => l.toLowerCase().startsWith(RUNTIME_LABEL_PREFIX));
+  const label = ticket.labels.find((l) => l.toLowerCase().startsWith(AGENT_LABEL_PREFIX));
   const raw = label
-    ? label.slice(RUNTIME_LABEL_PREFIX.length).trim().toLowerCase()
+    ? label.slice(AGENT_LABEL_PREFIX.length).trim().toLowerCase()
     : (board.defaultRuntime ?? symphonyConfig.defaultRuntime ?? 'claude');
   if (raw !== 'claude' && raw !== 'codex') {
     throw new Error(`[config] Ticket ${ticket.identifier} has unknown runtime ${JSON.stringify(raw)}. Expected "claude" or "codex".`);

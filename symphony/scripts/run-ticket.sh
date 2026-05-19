@@ -19,7 +19,7 @@
 #   STATE_IN_REVIEW / STATE_REWORK / STATE_MERGING / STATE_DONE
 #   SYMPHONY_ROOT    — path to ~/symphony
 #   AGENT_RUNTIME    — "claude" (default) or "codex". Selected per-ticket by the
-#                       poller from a `runtime:<name>` label or board defaultRuntime.
+#                       poller from an `agent:<name>` label or board defaultRuntime.
 #
 # Usage:
 #   run-ticket.sh <ticket-id> <ticket-title> [ticket-description] [--fresh|--feedback]

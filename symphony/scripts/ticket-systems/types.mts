@@ -22,7 +22,7 @@ export interface Issue {
   state: { id: string; name: string };
   assignee: { id: string; name: string } | null;
   /** All labels attached to the ticket. Used by the poller for routing
-   *  (e.g. `project:<slug>`, `runtime:codex`). May be empty. */
+   *  (e.g. `project:<slug>`, `agent:codex`). May be empty. */
   labels: string[];
 }
 

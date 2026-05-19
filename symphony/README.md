@@ -91,7 +91,7 @@ Each board file (`config/boards/*.json`) defines:
 | `ticketSystem` | `linear` or `jira` |
 | `states` | Map of state names → Linear state UUIDs |
 | `defaultRepo` | Fallback repo name when ticket has no project |
-| `defaultRuntime` | `claude` (default) or `codex`. Overridden per-ticket by `runtime:<name>` label. |
+| `defaultRuntime` | `claude` (default) or `codex`. Overridden per-ticket by `agent:<name>` label. |
 | `repos[]` | All git repos this board can touch (path, github, setup config) |
 | `projects[]` | Linear projects → repo mapping, with per-repo `hint` for the agent |
 
@@ -128,7 +128,7 @@ Symphony spawns one of two agent CLIs per ticket:
 
 Resolution order (highest priority first):
 
-1. **Per ticket** — `runtime:codex` label (Jira label or Linear label) on the ticket.
+1. **Per ticket** — `agent:codex` label (Jira label or Linear label) on the ticket.
 2. **Per board** — `defaultRuntime: "codex"` in `config/boards/*.json`.
 3. **Per machine** — `defaultRuntime: "codex"` in `config/symphony.json`. Useful for personal machines that should prefer codex when boards don't override.
 4. Built-in `"claude"`.
