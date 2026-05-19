@@ -1927,7 +1927,16 @@ async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
   for (const { proc } of runningAgents.values()) {
     if (proc.pid !== undefined) skip.add(proc.pid);
   }
-  const orphans = findOrphanPidsByWorktreePrefix(rows, prefixes, skip);
+  // Exclude every PID whose argv references a currently-tracked agent's
+  // worktree. The descendants of a live bash/python/claude tree share the
+  // worktree path with their ancestor, so a plain PID skip-set would still
+  // let Pass 2 reap them. Without this filter we'd kill the agent currently
+  // running this very session on the first poll cycle.
+  const liveTreePaths = liveAgentWorktreePaths();
+  const isUnderLiveAgent = (cmd: string): boolean =>
+    liveTreePaths.some((p) => cmd.includes(p));
+  const orphans = findOrphanPidsByWorktreePrefix(rows, prefixes, skip)
+    .filter(({ command }) => !isUnderLiveAgent(command));
   // Stable per-cycle log line: list how many orphans we found rather than one
   // line each, which would spam the dashboard on a cold start.
   if (orphans.length > 0) {
@@ -1941,8 +1950,9 @@ async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
   //
   // Reuse the same ps snapshot. AC 2 requires explicit cleanup even when no
   // poller-tracked agent matched, because nx daemons survive long past the
-  // node process that forked them.
-  const nxPids = findNxDaemonPids(rows);
+  // node process that forked them. Scope to Symphony-managed paths so we
+  // don't reap an unrelated workspace's daemon that the developer also runs.
+  const nxPids = findNxDaemonPids(rows, symphonyManagedPathPrefixes());
   if (nxPids.length > 0) {
     log(chalk.dim(`[${timestamp()}] ⏹ Stopping ${nxPids.length} stale nx daemon(s)`));
     for (const pid of nxPids) {

@@ -73,6 +73,26 @@ test('findOrphanPidsByWorktreePrefix returns empty when no prefixes configured',
   assert.deepEqual(findOrphanPidsByWorktreePrefix(rows, [], new Set()), []);
 });
 
+test('findOrphanPidsByWorktreePrefix exposes live-agent descendants — callers must filter', () => {
+  // Documenting expected contract: the helper itself only skips by exact PID,
+  // so live-agent descendants (claude / python / nested tool processes) under
+  // the worktree path of a tracked agent will be returned. poll-tickets.mts is
+  // responsible for filtering them out via liveAgentWorktreePaths().
+  const rows = [
+    { pid: 100, command: 'bash /Users/sun/Documents/claude-home-worktrees/feat-UP-789/run-ticket.sh' },
+    { pid: 101, command: 'claude --resume xxx (cwd=/Users/sun/Documents/claude-home-worktrees/feat-UP-789)' },
+    { pid: 102, command: 'python3 /Users/sun/symphony/scripts/pty-wrapper.py /tmp/x' }, // matches by symphony path
+  ];
+  // skip only the tracked bash; the claude descendant is intentionally NOT
+  // skipped at this layer — and must be excluded by the caller.
+  const orphans = findOrphanPidsByWorktreePrefix(
+    rows,
+    ['/Users/sun/Documents/claude-home-worktrees'],
+    new Set([100]),
+  );
+  assert.deepEqual(orphans.map((r) => r.pid), [101]);
+});
+
 // ── findNxDaemonPids ─────────────────────────────────────────────────────────
 
 test('findNxDaemonPids matches node nx.js daemon invocations under configured prefixes', () => {
