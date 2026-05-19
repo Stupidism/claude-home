@@ -20,9 +20,17 @@
 !ppt/
 !ppt/**
 
-# symphony automation — symphony/.gitignore handles runtime exclusions
+# symphony automation
+# NOTE: Because `!symphony/**` force-re-includes everything below, the nested
+# symphony/.gitignore cannot override it. Runtime/local exclusions must live here.
 !symphony/
 !symphony/**
 # Personal config is machine-specific and must not be committed
 symphony/config/
 symphony/config/**
+# Runtime state written by the poller and other scripts
+symphony/state/
+symphony/logs/
+symphony/node_modules/
+symphony/*.pid
+symphony/secrets.env
