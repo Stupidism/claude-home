@@ -75,6 +75,18 @@ def forward_signal(signum, frame):
             proc.terminate()
         except Exception:
             pass
+    # Break the read loop. Python retries `os.read()` after EINTR (PEP 475),
+    # so the main loop stays blocked until claude writes again or closes the
+    # PTY. If run-ticket.sh escalates to SIGKILL during its 5 s grace window,
+    # it kills this wrapper before the cleanup at the bottom of the script
+    # runs — and because claude is in its own session/PGID, the orphaned
+    # claude tree survives. Closing the master fd raises OSError on the next
+    # read, lets the loop exit, and routes through proc.wait(timeout=5) +
+    # the os.killpg(SIGKILL) escalation below.
+    try:
+        os.close(master_fd)
+    except OSError:
+        pass
 
 
 # Forward INT/TERM (poller shutdown) and HUP (parent terminal/poller exit
