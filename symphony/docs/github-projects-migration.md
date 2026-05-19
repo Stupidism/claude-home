@@ -92,13 +92,33 @@ must:
 1. Page through `node($projectId) { ... on ProjectV2 { items(first: 100) { nodes { ... } pageInfo { endCursor hasNextPage } } } }`.
 2. Filter client-side by Status option + assignee.
 
-At Symphony scale this is fine (hundreds of items per project, one page in
-practice). If it ever grows past a few thousand open items per board, we
-can add a "Closed" archive project and only poll the active one.
+At Symphony scale this is fine, but only if the adapter does **one shared
+Project scan per board poll** and fan-outs the result to every requested
+state. Repeating the full `items(first:100)` walk inside each
+`fetchTicketsByState` call would multiply the cost by the 5-6 polled states
+(`Todo`, `In Progress`, `Human Review`, `Merging`, `Rework`, optional
+`Cancelled`) and make the design unsafe much sooner.
+
+Implementation requirement for AC1: cache the most recent full-project scan
+for the duration of one poll loop (or expose a `fetchBoardSnapshot`
+primitive under the adapter and derive per-state lists from it). The poller
+can still call `fetchTicketsByState`, but the GitHub adapter must serve all
+state requests from the same freshly fetched snapshot rather than re-querying
+GitHub per state.
 
 GraphQL rate limits: 5,000 points/hour. Each item page (~100 items with
-nested fields) costs roughly 1 point. Polling every 30s = 120/hr/board.
-Well under budget.
+nested fields) costs roughly 1 point. With one shared scan every 30s, that
+is ~120 page queries/hour/board, which is comfortably inside budget for
+projects in the low hundreds of items. Without the shared scan, the current
+5-6 state poll pattern becomes ~600-720 page queries/hour/board before
+pagination, so a project around 700 active items can already risk exhausting
+the hourly budget.
+
+Because of that, the cutover guardrail is not "a few thousand items." The
+practical threshold is closer to "well below 1,000 active items unless we
+also reduce poll frequency or shard/archive the board." If `WOR` keeps
+growing, add a separate closed/archive project and keep the polled project
+restricted to active work only.
 
 ### 3.4 Single ticket fetch by identifier
 
