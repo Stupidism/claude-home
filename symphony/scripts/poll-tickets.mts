@@ -29,12 +29,14 @@ import {
 } from './html-dashboard.mts';
 import { linearAdapter } from './ticket-systems/linear.mts';
 import { jiraAdapter } from './ticket-systems/jira.mts';
+import { githubProjectsAdapter } from './ticket-systems/github-projects.mts';
 import {
   snapshotPsByCommand,
   findOrphanPidsByWorktreePrefix,
   findNxDaemonPids,
 } from './orphan-cleanup.mts';
 import type {
+  BoardGithubProjectsConfig,
   BoardJiraConfig,
   BoardLinearConfig,
   Issue,
@@ -121,13 +123,16 @@ interface ProjectConfig {
   /** Per-project Jira overrides. `projectLabel` is the Jira label (e.g.
    *  `project:symphony`) that routes a ticket to this Symphony project. */
   jira?: { projectLabel?: string };
+  /** Per-project GitHub-Projects overrides. `projectLabel` is the issue label
+   *  (e.g. `project:symphony`) that routes a ticket to this Symphony project. */
+  githubProjects?: { projectLabel?: string };
   /** Per-project Slack overrides — deep-merged on top of board.slack. */
   slack?: SlackConfig;
   /** Per-project GitHub overrides — deep-merged on top of board.github. */
   github?: GithubConfig;
 }
 
-type TicketSystem = 'linear' | 'jira';
+type TicketSystem = 'linear' | 'jira' | 'github-projects';
 
 interface BoardConfig {
   /** Linear: team UUID. Jira: project key (e.g. "UP"). */
@@ -145,6 +150,8 @@ interface BoardConfig {
   linear?: BoardLinearConfig;
   /** Jira-system block (required on Jira boards). */
   jira?: BoardJiraConfig;
+  /** GitHub-Projects block (required on github-projects boards). */
+  githubProjects?: BoardGithubProjectsConfig;
   /** Board-level Slack overrides — deep-merged on top of global symphony.slack. */
   slack?: SlackConfig;
   /** Board-level GitHub overrides — deep-merged on top of global symphony.github. */
@@ -183,14 +190,17 @@ function runtimeFor(ticket: Issue, board: BoardConfig): AgentRuntime {
  *  silently falling back to Linear — catches `ticketSystem: "jirA"` typos. */
 function ticketSystemFor(board: BoardConfig): TicketSystem {
   const system = board.ticketSystem ?? 'linear';
-  if (system !== 'linear' && system !== 'jira') {
-    throw new Error(`[config] Board "${board.name}" has unknown ticketSystem: ${JSON.stringify(system)}. Expected "linear" or "jira".`);
+  if (system !== 'linear' && system !== 'jira' && system !== 'github-projects') {
+    throw new Error(`[config] Board "${board.name}" has unknown ticketSystem: ${JSON.stringify(system)}. Expected "linear", "jira", or "github-projects".`);
   }
   return system;
 }
 
 function getAdapter(board: BoardConfig): TicketSystemAdapter {
-  return ticketSystemFor(board) === 'jira' ? jiraAdapter : linearAdapter;
+  const system = ticketSystemFor(board);
+  if (system === 'jira') return jiraAdapter;
+  if (system === 'github-projects') return githubProjectsAdapter;
+  return linearAdapter;
 }
 
 function assigneeIdFor(board: BoardConfig): string {
@@ -226,6 +236,10 @@ function statesFor(board: BoardConfig): StateKeys {
     if (!board.jira) throw new Error(`[config] Jira board "${board.name}" is missing the "jira" config block`);
     return board.jira.states;
   }
+  if (system === 'github-projects') {
+    if (!board.githubProjects) throw new Error(`[config] github-projects board "${board.name}" is missing the "githubProjects" config block`);
+    return board.githubProjects.states;
+  }
   if (!board.linear) throw new Error(`[config] Linear board "${board.name}" is missing the "linear" config block`);
   return board.linear.states;
 }
@@ -234,7 +248,10 @@ function statesFor(board: BoardConfig): StateKeys {
  *  a Symphony project entry. Linear projects use UUIDs; Jira tickets use
  *  the `project:<slug>` label (resolved by the Jira adapter into `ticket.project.id`). */
 function projectKeyFor(board: BoardConfig, project: ProjectConfig): string | undefined {
-  return ticketSystemFor(board) === 'jira' ? project.jira?.projectLabel : project.linear?.projectId;
+  const system = ticketSystemFor(board);
+  if (system === 'jira') return project.jira?.projectLabel;
+  if (system === 'github-projects') return project.githubProjects?.projectLabel;
+  return project.linear?.projectId;
 }
 
 /** Deep-merge plain objects. Arrays and primitives are replaced wholesale by
@@ -404,7 +421,11 @@ for (const board of boards) {
     }
     const key = projectKeyFor(board, project);
     if (!key) {
-      console.warn(chalk.yellow(`[config] Project "${project.name}" on board "${board.name}" is missing ${ticketSystemFor(board) === 'jira' ? 'jira.projectLabel' : 'linear.projectId'}`));
+      console.warn(chalk.yellow(`[config] Project "${project.name}" on board "${board.name}" is missing ${
+        ticketSystemFor(board) === 'jira' ? 'jira.projectLabel'
+          : ticketSystemFor(board) === 'github-projects' ? 'githubProjects.projectLabel'
+          : 'linear.projectId'
+      }`));
       continue;
     }
     projectMap.set(key, { project, primaryRepo, board });
@@ -434,6 +455,7 @@ if (ASSIGNEE_ID === 'YOUR_LINEAR_USER_UUID') {
 // Per-backend credential checks — only enforce what the configured boards actually need.
 const hasLinearBoard = boards.some((b) => ticketSystemFor(b) === 'linear');
 const hasJiraBoard = boards.some((b) => ticketSystemFor(b) === 'jira');
+const hasGithubProjectsBoard = boards.some((b) => ticketSystemFor(b) === 'github-projects');
 
 if (hasLinearBoard && !process.env['LINEAR_API_KEY']) {
   console.error(chalk.red('ERROR: LINEAR_API_KEY not set in $SYMPHONY_ROOT/secrets.env (required by a Linear board)'));
@@ -449,6 +471,34 @@ if (hasJiraBoard) {
   for (const b of boards.filter((b) => ticketSystemFor(b) === 'jira')) {
     if (!b.jira?.baseUrl) {
       console.error(chalk.red(`ERROR: Jira board "${b.name}" is missing "jira.baseUrl" (e.g. "https://your-org.atlassian.net")`));
+      process.exit(1);
+    }
+  }
+}
+if (hasGithubProjectsBoard) {
+  if (!process.env['GITHUB_TOKEN']) {
+    console.error(chalk.red('ERROR: GITHUB_TOKEN not set in $SYMPHONY_ROOT/secrets.env (required by a github-projects board)'));
+    console.error(chalk.yellow('  Create a fine-grained PAT with Issues:write + Projects:write + Metadata:read'));
+    process.exit(1);
+  }
+  for (const b of boards.filter((b) => ticketSystemFor(b) === 'github-projects')) {
+    const gp = b.githubProjects;
+    if (!gp) {
+      console.error(chalk.red(`ERROR: github-projects board "${b.name}" is missing the "githubProjects" config block`));
+      process.exit(1);
+    }
+    const missing = [
+      ['owner', gp.owner],
+      ['projectNumber', gp.projectNumber],
+      ['repo', gp.repo],
+      ['states', gp.states],
+    ].filter(([, v]) => v === undefined || v === null || v === '').map(([k]) => `githubProjects.${k}`);
+    if (missing.length) {
+      console.error(chalk.red(`ERROR: github-projects board "${b.name}" is missing ${missing.join(', ')}`));
+      process.exit(1);
+    }
+    if (!gp.repo.includes('/')) {
+      console.error(chalk.red(`ERROR: github-projects board "${b.name}" has invalid "githubProjects.repo" — expected "owner/name", got ${JSON.stringify(gp.repo)}`));
       process.exit(1);
     }
   }
@@ -2050,7 +2100,7 @@ async function poll(): Promise<void> {
         log(chalk.yellow(`  可能原因：assigneeId 或 state ID 格式不合法。`));
         log(chalk.cyan(`  检查 ${path.join(CONFIG_DIR, 'symphony.json')} 里的 assigneeId 是否为有效 UUID。`));
       } else {
-        const label = system === 'jira' ? 'Jira' : 'Linear';
+        const label = system === 'jira' ? 'Jira' : system === 'github-projects' ? 'GitHub Projects' : 'Linear';
         log(chalk.red(`[${timestamp()}] ${label} API error (${board.name}): ${err}`));
       }
       continue;

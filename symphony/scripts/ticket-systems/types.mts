@@ -57,15 +57,37 @@ export interface BoardJiraConfig {
   transitions: Partial<Record<StateKey, string>>;
 }
 
+/** GitHub-Projects config block on a board file.
+ *
+ *  ProjectV2 holds Symphony state in a single-select field (default "Status").
+ *  Each Symphony state maps to the *display name* of one option in that field
+ *  (e.g. `todo: "Todo"`); the adapter compares against option names, the same
+ *  way the Jira adapter compares against status names. */
+export interface BoardGithubProjectsConfig {
+  /** Owner login (user or org) that hosts the ProjectV2. */
+  owner: string;
+  /** Project number from the project URL (`/users/<owner>/projects/<n>`). */
+  projectNumber: number;
+  /** "owner/repo" of the repo whose Issues live in the project. Used for
+   *  REST comment + label calls — ProjectV2 itself has no per-item comments. */
+  repo: string;
+  /** Single-select field name carrying the Symphony state. Defaults to "Status". */
+  statusField?: string;
+  /** ProjectV2 single-select option names keyed by Symphony state. */
+  states: StateKeys;
+}
+
 export interface BoardLike {
   name: string;
   ticketPrefix: string;
   /** Missing is allowed; the poller defaults to "linear" via `ticketSystemFor`. */
-  ticketSystem?: 'linear' | 'jira';
-  /** Linear: team UUID. Jira: project key (e.g. "UP"). */
+  ticketSystem?: 'linear' | 'jira' | 'github-projects';
+  /** Linear: team UUID. Jira: project key (e.g. "UP"). GitHub Projects: ignored
+   *  (project number lives under `githubProjects` instead). */
   teamId: string;
   linear?: BoardLinearConfig;
   jira?: BoardJiraConfig;
+  githubProjects?: BoardGithubProjectsConfig;
 }
 
 export interface TicketSystemAdapter {
