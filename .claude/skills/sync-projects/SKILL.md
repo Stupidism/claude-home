@@ -57,14 +57,15 @@ This prints every Linear project's UUID and name.
 
 Jira doesn't expose a "project" concept that matches Symphony's notion — Symphony uses `project:<name>` labels on issues to map a ticket to a `projects[]` entry. Discover the distinct labels in use by querying recent issues:
 
-Preferred: `mcp__mcp-atlassian__jira_search` with JQL `project = <ticketPrefix> AND labels in ("project:*")` and request `labels` in `fields`. Curl fallback (see `$SKILLS_ROOT/jira/SKILL.md` for the auth header):
+Preferred: `mcp__mcp-atlassian__jira_search` with JQL `project = <ticketPrefix> AND labels is not EMPTY` and request `labels` in `fields`, then filter for the `project:` prefix in the result handler below. (Jira Cloud JQL does not support wildcards on `labels` — `labels in ("project:*")` would match the literal string `project:*` and return nothing.) Curl fallback (see `$SKILLS_ROOT/jira/SKILL.md` for the auth header):
 
 ```bash
 JIRA_BASE_URL=$(jq -r '.jira.baseUrl' "$BOARD_FILE")
 PROJECT_KEY=$(jq -r '.ticketPrefix' "$BOARD_FILE")
 
+JQL=$(printf 'project = %s AND labels is not EMPTY' "$PROJECT_KEY" | jq -sRr @uri)
 curl -s -H "Authorization: $JIRA_AUTH" -H "Accept: application/json" \
-  "$JIRA_BASE_URL/rest/api/3/search?jql=project%3D${PROJECT_KEY}&fields=labels&maxResults=200" \
+  "$JIRA_BASE_URL/rest/api/3/search?jql=${JQL}&fields=labels&maxResults=200" \
   | node -e "
     const d = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
     const slugs = new Set();
