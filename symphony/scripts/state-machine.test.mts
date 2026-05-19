@@ -89,9 +89,10 @@ function makeDeps(overrides: Partial<Deps<BoardRef>> = {}): { deps: Deps<BoardRe
     cleanupCancelledTicket: recordAsync('cleanupCancelledTicket', undefined),
     areAllPRsMerged: () => false,
     isPRUrlMerged: () => false,
-    checkHumanReviewApproval: async () => ({ alreadyHandled: false, aiReviewed: false, approved: false, prUrl: null, lockedPrUrl: null }),
+    checkHumanReviewApproval: async () => ({ alreadyHandled: false, aiReviewed: false, approved: false, prUrl: null, lockedPrUrl: null, lastFeedbackRerouteAt: null }),
     postComment: recordAsync('postComment', undefined),
     spawnAIReview: record('spawnAIReview'),
+    hasNewPRReviewSince: async () => false,
     spawnNotifyReview: (async () => null) as Deps<BoardRef>['spawnNotifyReview'],
     addLabel: recordAsync('addLabel', undefined),
     isAgentRunning: () => false,
@@ -232,6 +233,7 @@ for (const board of boards) {
         approved: false,
         prUrl: 'https://github.com/x/y/pull/999',
         lockedPrUrl: 'https://github.com/x/y/pull/999',
+        lastFeedbackRerouteAt: null,
       }),
     });
     const effect = await processTicket('humanReview', ticket, board, deps);
@@ -251,6 +253,7 @@ for (const board of boards) {
         approved: false,
         prUrl: 'https://github.com/x/y/pull/777',
         lockedPrUrl: null,
+        lastFeedbackRerouteAt: null,
       }),
     });
     const effect = await processTicket('humanReview', ticket, board, deps);
@@ -278,6 +281,7 @@ for (const board of boards) {
         approved: true,
         prUrl: 'https://github.com/x/y/pull/1',
         lockedPrUrl: 'https://github.com/x/y/pull/1',
+        lastFeedbackRerouteAt: null,
       }),
     });
     const effect = await processTicket('humanReview', ticket, board, deps);
@@ -296,6 +300,7 @@ for (const board of boards) {
         approved: false,
         prUrl: 'https://github.com/x/y/pull/3',
         lockedPrUrl: 'https://github.com/x/y/pull/3',
+        lastFeedbackRerouteAt: null,
       }),
       spawnNotifyReview: async (_t, _b, url) => { spawnCalls.push(url); return null; },
     });
@@ -316,6 +321,7 @@ for (const board of boards) {
         approved: false,
         prUrl: 'https://github.com/x/y/pull/4',
         lockedPrUrl: 'https://github.com/x/y/pull/4',
+        lastFeedbackRerouteAt: null,
       }),
       spawnNotifyReview: async (_t, _b, url) => { spawnCalls.push(url); return 'https://slack/x'; },
     });
@@ -338,6 +344,7 @@ for (const board of boards) {
         approved: false,
         prUrl: 'https://github.com/x/y/pull/5',
         lockedPrUrl: 'https://github.com/x/y/pull/5',
+        lastFeedbackRerouteAt: null,
       }),
       spawnNotifyReview: async (_t, _b, url) => { spawnCalls.push(url); return 'https://slack/x'; },
     });
@@ -356,11 +363,95 @@ for (const board of boards) {
         approved: false,
         prUrl: 'https://github.com/x/y/pull/2',
         lockedPrUrl: null,
+        lastFeedbackRerouteAt: null,
       }),
     });
     const effect = await processTicket('humanReview', ticket, board, deps);
     assert.deepEqual(effect, { kind: 'humanReviewTriggerAI' });
     assert.deepEqual(fnNames(calls), ['postComment', 'spawnAIReview']);
+  });
+
+  test(`[${board.name}] humanReview after AI fired with no new PR review yet → waits (no reroute)`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 140, 'humanReview', board);
+    const { deps, calls } = makeDeps({
+      checkHumanReviewApproval: async () => ({
+        alreadyHandled: false,
+        aiReviewed: true,
+        approved: false,
+        prUrl: 'https://github.com/x/y/pull/140',
+        lockedPrUrl: 'https://github.com/x/y/pull/140',
+        lastFeedbackRerouteAt: null,
+      }),
+      hasNewPRReviewSince: async () => false,
+    });
+    const effect = await processTicket('humanReview', ticket, board, deps);
+    assert.deepEqual(effect, { kind: 'humanReviewWaitForApproval' });
+    assert.ok(!fnNames(calls).includes('moveToInProgress'), 'must not reroute without fresh PR feedback');
+  });
+
+  test(`[${board.name}] humanReview with fresh PR review → posts reroute lock + moves to In Progress`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 141, 'humanReview', board);
+    const { deps, calls } = makeDeps({
+      checkHumanReviewApproval: async () => ({
+        alreadyHandled: false,
+        aiReviewed: true,
+        approved: false,
+        prUrl: 'https://github.com/x/y/pull/141',
+        lockedPrUrl: 'https://github.com/x/y/pull/141',
+        lastFeedbackRerouteAt: null,
+      }),
+      hasNewPRReviewSince: async () => true,
+    });
+    const effect = await processTicket('humanReview', ticket, board, deps);
+    assert.deepEqual(effect, { kind: 'humanReviewFeedbackReroute' });
+    assert.deepEqual(fnNames(calls), ['postComment', 'moveToInProgress']);
+    const postCommentCall = calls.find((c) => c.fn === 'postComment');
+    const body = (postCommentCall?.args as unknown[])[2] as string;
+    assert.match(body, /^\[symphony\] feedbackReroute: https:\/\/github\.com\/x\/y\/pull\/141 at=\d{4}-\d{2}-\d{2}T/);
+  });
+
+  test(`[${board.name}] humanReview reroute is gated by approval → approved short-circuits to Merging`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 142, 'humanReview', board);
+    let rerouteCheck = 0;
+    const { deps, calls } = makeDeps({
+      checkHumanReviewApproval: async () => ({
+        alreadyHandled: false,
+        aiReviewed: true,
+        approved: true,
+        prUrl: 'https://github.com/x/y/pull/142',
+        lockedPrUrl: 'https://github.com/x/y/pull/142',
+        lastFeedbackRerouteAt: null,
+      }),
+      hasNewPRReviewSince: async () => { rerouteCheck++; return true; },
+    });
+    const effect = await processTicket('humanReview', ticket, board, deps);
+    assert.deepEqual(effect, { kind: 'humanReviewApproved' });
+    assert.equal(rerouteCheck, 0, 'reroute branch must short-circuit on approved without invoking gh');
+    // postComment (approval lock) + moveToMerging — same as the existing approval test.
+    assert.deepEqual(fnNames(calls).slice(0, 2), ['postComment', 'moveToMerging']);
+    assert.ok(!fnNames(calls).includes('moveToInProgress'), 'approval must short-circuit reroute');
+  });
+
+  test(`[${board.name}] humanReview after prior reroute → only re-reroutes when PR review is newer than lock`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 143, 'humanReview', board);
+    const lastReroute = new Date('2026-05-19T07:00:00Z');
+    const receivedSince: Array<Date | null> = [];
+    const { deps } = makeDeps({
+      checkHumanReviewApproval: async () => ({
+        alreadyHandled: false,
+        aiReviewed: true,
+        approved: false,
+        prUrl: 'https://github.com/x/y/pull/143',
+        lockedPrUrl: 'https://github.com/x/y/pull/143',
+        lastFeedbackRerouteAt: lastReroute,
+      }),
+      hasNewPRReviewSince: async (_url, since) => { receivedSince.push(since); return false; },
+    });
+    const effect = await processTicket('humanReview', ticket, board, deps);
+    assert.deepEqual(effect, { kind: 'humanReviewWaitForApproval' });
+    assert.equal(receivedSince.length, 1);
+    assert.equal(receivedSince[0]?.toISOString(), lastReroute.toISOString(),
+      'cut-off must be the most recent reroute timestamp');
   });
 
   test(`[${board.name}] merging with already-merged PR → finalize directly`, async () => {
@@ -528,6 +619,7 @@ for (const board of boards) {
           approved: true,
           prUrl: 'https://github.com/x/y/pull/999',
           lockedPrUrl: 'https://github.com/x/y/pull/999',
+          lastFeedbackRerouteAt: null,
         }),
       });
       calls.push(await processTicket('humanReview', ticket, board, deps, lastSeen));

@@ -92,9 +92,24 @@ export interface Deps<Board extends BoardRef = BoardRef> {
      * URL pasted in human discussion can't trigger a premature Done move.
      */
     lockedPrUrl: string | null;
+    /**
+     * Timestamp parsed from the most recent `[symphony] feedbackReroute:` lock
+     * comment (the `at=<ISO>` suffix). Null when no reroute has happened yet,
+     * which means "the next PR review is the first the agent will see". Used
+     * by handleHumanReview to decide whether to re-hand fresh feedback back to
+     * the agent.
+     */
+    lastFeedbackRerouteAt: Date | null;
   }>;
   postComment(board: Board, issueId: string, body: string): Promise<void>;
   spawnAIReview(ticket: Issue, board: Board, prUrl: string): void;
+  /**
+   * Return true if the PR has any review (state != APPROVED) or substantive
+   * top-level comment newer than `since`. When `since` is null, returns true
+   * if ANY such feedback exists at all. Used by handleHumanReview to decide
+   * whether to auto-reroute the ticket back to In Progress for pr-feedback-sweep.
+   */
+  hasNewPRReviewSince(prUrl: string, since: Date | null): Promise<boolean>;
   spawnNotifyReview(ticket: Issue, board: Board, prUrl: string): Promise<string | null>;
   /** Add a label to the ticket. Used by humanReview to record that the
    *  team-notify side-effect has already fired (so it won't fire again on the
@@ -131,6 +146,7 @@ export type Effect =
   | { kind: 'finalizeMergedDuringReview' }
   | { kind: 'humanReviewWaitForApproval' }
   | { kind: 'humanReviewTriggerAI' }
+  | { kind: 'humanReviewFeedbackReroute' }
   | { kind: 'humanReviewNotifyTeam' }
   | { kind: 'humanReviewApproved' }
   | { kind: 'resetRework' }
@@ -139,6 +155,11 @@ export type Effect =
 export const MAX_RETRIES = 3;
 export const AI_REVIEW_LOCK_PREFIX = '[symphony] aiReviewRequested:';
 export const APPROVAL_LOCK_PREFIX = '[symphony] developerApproved:';
+/** Stamped on the ticket workpad each time the poller hands AI/human PR feedback
+ *  back to the agent. Body format: `${PREFIX} <prUrl> at=<ISO>` — the timestamp
+ *  is the cut-off used on the next cycle to decide whether new PR reviews have
+ *  arrived since the last reroute (enables multi-round feedback handling). */
+export const FEEDBACK_REROUTE_LOCK_PREFIX = '[symphony] feedbackReroute:';
 /** Developer-applied label that asks the poller to ping the team. */
 export const NEEDS_NOTIFY_LABEL = 'symphony:needs-notify-review';
 /** Poller-applied label that records the notify side-effect already fired. */
@@ -295,13 +316,21 @@ async function handleHumanReview<B extends BoardRef>({ ticket, board, deps }: Di
     approved: boolean;
     prUrl: string | null;
     lockedPrUrl: string | null;
-  } = { alreadyHandled: false, aiReviewed: false, approved: false, prUrl: null, lockedPrUrl: null };
+    lastFeedbackRerouteAt: Date | null;
+  } = {
+    alreadyHandled: false,
+    aiReviewed: false,
+    approved: false,
+    prUrl: null,
+    lockedPrUrl: null,
+    lastFeedbackRerouteAt: null,
+  };
   try {
     approvalInfo = await deps.checkHumanReviewApproval(ticket, board);
   } catch (err) {
     deps.log(`checkHumanReviewApproval failed for ${ticket.identifier}: ${err}`);
   }
-  const { alreadyHandled, aiReviewed, approved, prUrl, lockedPrUrl } = approvalInfo;
+  const { alreadyHandled, aiReviewed, approved, prUrl, lockedPrUrl, lastFeedbackRerouteAt } = approvalInfo;
 
   // Fallback: a Symphony-authored lock comment references a PR whose head
   // branch doesn't match the synthesized branch name (e.g. agent recognized
@@ -327,6 +356,33 @@ async function handleHumanReview<B extends BoardRef>({ ticket, board, deps }: Di
     await deps.postComment(board, ticket.id, `${AI_REVIEW_LOCK_PREFIX} ${prUrl}`);
     deps.spawnAIReview(ticket, board, prUrl);
     triggeredAI = true;
+  }
+
+  // Auto-reroute back to In Progress when a reviewer has actually left
+  // feedback on the PR. Gated on `aiReviewed` (the trigger comment exists, so
+  // the cycle that just spawned the AI reviewer doesn't immediately reroute
+  // before any review has been posted) and on `hasNewPRReviewSince` reporting
+  // a review newer than the last reroute lock (multi-round: every subsequent
+  // human/AI review starts a fresh feedback pass). The next cycle's
+  // handleInProgress will see prevState=humanReview and spawn the agent in
+  // `feedback` mode → pr-feedback-sweep picks up the new findings.
+  if (aiReviewed && !approved && !merged && prUrl) {
+    let hasFeedback = false;
+    try {
+      hasFeedback = await deps.hasNewPRReviewSince(prUrl, lastFeedbackRerouteAt);
+    } catch (err) {
+      deps.log(`hasNewPRReviewSince failed for ${ticket.identifier}: ${err}`);
+    }
+    if (hasFeedback) {
+      const stamp = new Date().toISOString();
+      await deps.postComment(
+        board,
+        ticket.id,
+        `${FEEDBACK_REROUTE_LOCK_PREFIX} ${prUrl} at=${stamp}`,
+      );
+      await deps.moveToInProgress(board, ticket.id, ticket.identifier);
+      return { kind: 'humanReviewFeedbackReroute' };
+    }
   }
 
   // Approval → move directly to Merging. In Review is gone (UP-782); the gate

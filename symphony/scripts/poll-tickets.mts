@@ -46,6 +46,7 @@ import {
   processTicket,
   AI_REVIEW_LOCK_PREFIX,
   APPROVAL_LOCK_PREFIX,
+  FEEDBACK_REROUTE_LOCK_PREFIX,
   NEEDS_NOTIFY_LABEL,
   REVIEW_NOTIFIED_LABEL,
   MAX_RETRIES as STATE_MACHINE_MAX_RETRIES,
@@ -1711,7 +1712,20 @@ async function checkHumanReviewApproval(issue: Issue, board: BoardConfig) {
     .filter((b) => b.startsWith(AI_REVIEW_LOCK_PREFIX) || b.startsWith(APPROVAL_LOCK_PREFIX))
     .map((b) => b.match(prPattern)?.[0])
     .find(Boolean) ?? null;
-  return { alreadyHandled, aiReviewed, approved, prUrl, lockedPrUrl };
+  // Most recent `[symphony] feedbackReroute: <prUrl> at=<ISO>` timestamp. Used
+  // as the cut-off when deciding whether new PR feedback has arrived since the
+  // last hand-off. Lock bodies missing/malformed `at=` are skipped — they
+  // contribute nothing to the cut-off, so worst case is one extra reroute.
+  const rerouteTimes = bodies
+    .filter((b) => b.startsWith(FEEDBACK_REROUTE_LOCK_PREFIX))
+    .map((b) => b.match(/\bat=(\S+)/)?.[1])
+    .map((s) => (s ? new Date(s) : null))
+    .filter((d): d is Date => d !== null && !Number.isNaN(d.getTime()))
+    .map((d) => d.getTime());
+  const lastFeedbackRerouteAt = rerouteTimes.length > 0
+    ? new Date(Math.max(...rerouteTimes))
+    : null;
+  return { alreadyHandled, aiReviewed, approved, prUrl, lockedPrUrl, lastFeedbackRerouteAt };
 }
 
 async function postComment(board: BoardConfig, issueId: string, body: string): Promise<void> {
@@ -1772,6 +1786,47 @@ If Slack MCP is not available, print the composed message so it can be copied ma
   });
 }
 
+/**
+ * Returns true iff the PR has a review newer than `since` whose state is not
+ * APPROVED. Uses `gh pr view --json reviews`; failures degrade to `false` (we
+ * never want to auto-reroute on a transient gh CLI hiccup). Top-level issue
+ * comments are intentionally ignored — they're noisy (the AI-review trigger
+ * itself, user replies, bot walkthroughs), while a PR review is a strong
+ * signal that someone actually evaluated the diff.
+ */
+function hasNewPRReviewSince(prUrl: string, since: Date | null): Promise<boolean> {
+  const prNumber = prUrl.match(/\/pull\/(\d+)/)?.[1];
+  const repoMatch = prUrl.match(/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/);
+  if (!prNumber || !repoMatch) return Promise.resolve(false);
+  const repo = repoMatch[1];
+  const sinceMs = since?.getTime() ?? 0;
+
+  return new Promise<boolean>((resolve) => {
+    const child = child_process.spawn(
+      'gh',
+      ['pr', 'view', prNumber, '--repo', repo, '--json', 'reviews'],
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    let output = '';
+    child.stdout?.on('data', (d: Buffer) => (output += d.toString()));
+    child.on('error', () => resolve(false));
+    child.on('exit', (code) => {
+      if (code !== 0) return resolve(false);
+      try {
+        const data = JSON.parse(output) as {
+          reviews: Array<{ state: string; submittedAt: string }>;
+        };
+        const hasNew = data.reviews.some(
+          (r) => r.state !== 'APPROVED' && new Date(r.submittedAt).getTime() > sinceMs,
+        );
+        resolve(hasNew);
+      } catch {
+        resolve(false);
+      }
+    });
+  });
+}
+
 function spawnAIReview(issue: Issue, board: BoardConfig, prUrl: string): void {
   const prNumber = prUrl.match(/\/pull\/(\d+)/)?.[1];
   if (!prNumber) return;
@@ -1783,9 +1838,10 @@ function spawnAIReview(issue: Issue, board: BoardConfig, prUrl: string): void {
   if (!codeReviewComment) return; // no review configured for this repo/board — skip
   const repoPath = repoConfig.path.replace(/^~/, process.env['HOME'] ?? '~');
 
-  // Fire-and-forget the trigger comment. The AI reviewer leaves its feedback as
-  // PR comments/reviews; the agent picks those up via pr-feedback-sweep on its
-  // next activation, so the poller no longer needs to drive completion handling.
+  // Fire-and-forget the trigger comment. The AI reviewer leaves its feedback
+  // as a PR review; the next poll cycle detects it via hasNewPRReviewSince and
+  // reroutes the ticket back to In Progress, where the agent picks up the
+  // findings via pr-feedback-sweep.
   const child = child_process.spawn(
     'gh',
     ['pr', 'comment', prNumber, '--body', codeReviewComment],
@@ -2035,6 +2091,7 @@ async function poll(): Promise<void> {
       checkHumanReviewApproval,
       postComment,
       spawnAIReview,
+      hasNewPRReviewSince,
       spawnNotifyReview,
       addLabel,
       isAgentRunning: (id) => runningAgents.has(id),
@@ -2157,7 +2214,7 @@ async function poll(): Promise<void> {
       moveToInProgress, moveToHumanReview, moveToMerging, moveToTodo, moveToDone,
       spawnAgent, resetReworkTicket, removeWorktree, cleanupCancelledTicket,
       areAllPRsMerged, isPRUrlMerged,
-      checkHumanReviewApproval, postComment, spawnAIReview, spawnNotifyReview, addLabel,
+      checkHumanReviewApproval, postComment, spawnAIReview, hasNewPRReviewSince, spawnNotifyReview, addLabel,
       isAgentRunning: (id) => runningAgents.has(id),
       agentSlotsAvailable: () => Math.max(0, MAX_CONCURRENT - runningAgents.size),
       failureCountFor: (id) => failureCounts.get(id) ?? 0,
