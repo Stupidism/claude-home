@@ -31,6 +31,62 @@
 
 set -euo pipefail
 
+# Re-exec via setsid(2) so this bash becomes a session+process-group leader.
+# Without this, the script inherits the poller's PGID and `kill -- -$$` in the
+# trap below would signal the poller itself. macOS does not ship setsid(1), so
+# fall back to a one-liner using Python's POSIX bindings, which are always
+# available wherever this codebase runs.
+if [ -z "${SYMPHONY_NEW_SESSION:-}" ]; then
+  # Pass the sentinel inline via `env` so it reaches the re-exec'd process but
+  # is NOT exported to anything claude / the agent later spawns. Otherwise a
+  # nested run-ticket.sh invocation would inherit `SYMPHONY_NEW_SESSION=1`,
+  # skip the setsid bootstrap, and silently rejoin the parent's process group.
+  if command -v setsid >/dev/null 2>&1; then
+    exec env SYMPHONY_NEW_SESSION=1 setsid -w "$0" "$@"
+  else
+    exec env SYMPHONY_NEW_SESSION=1 /usr/bin/env python3 -c "import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])" "$0" "$@"
+  fi
+fi
+# Drop the sentinel as soon as the second-pass shell starts so children we
+# spawn never see it either.
+unset SYMPHONY_NEW_SESSION
+
+# Cleanup: on INT/TERM/HUP/EXIT, signal every descendant in our process group.
+# SIGKILL cannot be ignored, so we cannot use `kill -- -$$` / `kill 0` — that
+# would kill this bash mid-trap and lose the agent exit code. Enumerate the
+# group via pgrep and kill children individually (excluding $$). Order:
+# SIGTERM, brief grace period, SIGKILL stragglers.
+cleanup_process_group() {
+  # When fired from a signal trap, $? inside the handler is the previous
+  # command's status, not the canonical 128+N signal exit code. Each trap
+  # passes the right value in explicitly so monitoring systems (and the
+  # poller's `child.on('exit')` handler) see 130/143/129 instead of 0.
+  local exit_code="${1:-$?}"
+  trap '' INT TERM HUP
+  trap - EXIT
+  local victims
+  victims="$(pgrep -g $$ 2>/dev/null | grep -vx $$ || true)"
+  if [ -n "$victims" ]; then
+    # shellcheck disable=SC2086
+    kill -TERM $victims 2>/dev/null || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      victims="$(pgrep -g $$ 2>/dev/null | grep -vx $$ || true)"
+      [ -z "$victims" ] && break
+      sleep 0.5
+    done
+    victims="$(pgrep -g $$ 2>/dev/null | grep -vx $$ || true)"
+    if [ -n "$victims" ]; then
+      # shellcheck disable=SC2086
+      kill -KILL $victims 2>/dev/null || true
+    fi
+  fi
+  exit "$exit_code"
+}
+trap 'cleanup_process_group 130' INT
+trap 'cleanup_process_group 143' TERM
+trap 'cleanup_process_group 129' HUP
+trap 'cleanup_process_group $?' EXIT
+
 TICKET_ID="${1:?Usage: run-ticket.sh <ticket-id> <title> [description] [--fresh]}"
 TICKET_TITLE="${2:?Usage: run-ticket.sh <ticket-id> <title> [description] [--fresh]}"
 TICKET_DESC="${3:-(no description provided)}"

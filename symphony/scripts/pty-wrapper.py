@@ -52,23 +52,48 @@ cmd = (
 )
 
 master_fd, slave_fd = pty.openpty()
+# start_new_session=True puts claude (and every descendant it forks — MCP
+# servers, LSP, tool subprocesses) into its own session+PGID. That gives the
+# parent (run-ticket.sh) a single PGID to signal, and prevents claude from
+# becoming an orphan reparented to launchd when this wrapper is SIGKILL'd.
 proc = subprocess.Popen(
     cmd,
     stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
-    env=env, close_fds=True,
+    env=env, close_fds=True, start_new_session=True,
 )
 os.close(slave_fd)
 
 
 def forward_signal(signum, frame):
+    # Forward to claude's entire process group so MCP servers and other
+    # descendants get the signal too — `proc.terminate()` alone only hits
+    # the immediate child and leaves descendants orphaned.
     try:
-        proc.terminate()
-    except Exception:
+        os.killpg(proc.pid, signum)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    # Break the read loop. Python retries `os.read()` after EINTR (PEP 475),
+    # so the main loop stays blocked until claude writes again or closes the
+    # PTY. If run-ticket.sh escalates to SIGKILL during its 5 s grace window,
+    # it kills this wrapper before the cleanup at the bottom of the script
+    # runs — and because claude is in its own session/PGID, the orphaned
+    # claude tree survives. Closing the master fd raises OSError on the next
+    # read, lets the loop exit, and routes through proc.wait(timeout=5) +
+    # the os.killpg(SIGKILL) escalation below.
+    try:
+        os.close(master_fd)
+    except OSError:
         pass
 
 
+# Forward INT/TERM (poller shutdown) and HUP (parent terminal/poller exit
+# under launchd or session-leader death) so claude can clean up before dying.
 signal.signal(signal.SIGTERM, forward_signal)
 signal.signal(signal.SIGINT, forward_signal)
+signal.signal(signal.SIGHUP, forward_signal)
 
 # Scan PTY output for the rate-limit banner so the poller can pause the
 # session (see poll-tickets.mts RATE_LIMIT_PATTERN). The TUI output is
@@ -112,15 +137,21 @@ while True:
             pass
         rate_limit_hit = True
         try:
-            proc.terminate()
-        except Exception:
-            pass
+            os.killpg(proc.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                proc.terminate()
+            except Exception:
+                pass
         break
 
 try:
     proc.wait(timeout=5)
 except subprocess.TimeoutExpired:
-    proc.kill()
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        proc.kill()
     proc.wait()
 
 # Surface claude's exit error. When claude exits with a non-zero status,
