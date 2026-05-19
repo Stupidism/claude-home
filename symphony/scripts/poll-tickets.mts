@@ -29,6 +29,11 @@ import {
 } from './html-dashboard.mts';
 import { linearAdapter } from './ticket-systems/linear.mts';
 import { jiraAdapter } from './ticket-systems/jira.mts';
+import {
+  snapshotPsByCommand,
+  findOrphanPidsByWorktreePrefix,
+  findNxDaemonPids,
+} from './orphan-cleanup.mts';
 import type {
   BoardJiraConfig,
   BoardLinearConfig,
@@ -1832,10 +1837,60 @@ async function cleanupDoneWorktrees(activeIdentifiers: Set<string>, board: Board
   }
 }
 
+/**
+ * Build the set of path prefixes that scope orphan reclamation: every
+ * configured worktrees directory plus every repo root. Used to keep the scan
+ * from reaping nx daemons / processes belonging to unrelated workspaces the
+ * developer happens to have open on the same machine.
+ */
+function symphonyManagedPathPrefixes(): string[] {
+  const home = process.env['HOME'] ?? '~';
+  const out = new Set<string>();
+  for (const board of boards) {
+    for (const repo of board.repos) {
+      out.add(repo.worktreesDir.replace(/^~/, home));
+      out.add(repo.path.replace(/^~/, home));
+    }
+  }
+  return [...out];
+}
+
+/**
+ * Worktree subdirectories owned by agents this poller is currently managing.
+ * Anything inside these paths is by definition live work — exclude it from
+ * orphan scans so we never SIGTERM a child of a running agent (P1 review
+ * finding on UP-789).
+ */
+function liveAgentWorktreePaths(): string[] {
+  return [...runningAgents.values()].map((a) => a.worktreePath);
+}
+
+function killOrphanedNxDaemons(): void {
+  // Shutdown caller: every agent is being torn down, so any nx daemon under
+  // a Symphony-managed worktree / repo root is fair game. The prefix scope
+  // is the only thing protecting other workspaces' daemons.
+  const rows = snapshotPsByCommand();
+  const pids = findNxDaemonPids(rows, symphonyManagedPathPrefixes());
+  if (pids.length === 0) return;
+  for (const pid of pids) {
+    try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
+  }
+  log(chalk.dim(`[${timestamp()}] ⏹ Sent SIGTERM to ${pids.length} nx daemon process(es)`));
+}
+
 async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
   const logsDir = path.join(SYMPHONY_ROOT, 'logs');
   if (!fs.existsSync(logsDir)) return;
 
+  // ── Pass 1: PID files left behind by previous pollers ─────────────────────
+  //
+  // Any pid-file PID still alive that we don't own is an orphan from a
+  // previous poller (SIGKILL'd / OOM'd / crashed). Kill the whole process
+  // group — bash from run-ticket.sh is a session leader (see setsid trampoline
+  // in run-ticket.sh) so the negative-PID form reaches claude + descendants.
+  // Done-state gating was removed: orphans in any ticket state are reclaimed
+  // because their original poller no longer owns them and they accumulate
+  // forever otherwise (UP-789).
   const files = fs.readdirSync(logsDir).filter((f) => f.startsWith('agent-pid-') && f.endsWith('.pid'));
   for (const file of files) {
     const match = file.match(/^agent-pid-([A-Z]+-\d+)\.pid$/i);
@@ -1848,19 +1903,51 @@ async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
     if (!isPidAlive(pid)) { fs.rmSync(filePath, { force: true }); continue; }
     if (runningAgents.has(identifier)) continue;
 
-    // Find which board this ticket belongs to
-    const prefix = identifier.split('-')[0];
-    const board = boards.find((b) => b.ticketPrefix === prefix);
-    if (!board) continue;
+    log(chalk.dim(`[${timestamp()}] ⏹ Killing orphan agent group for ${identifier} (PID ${pid})`));
+    try { process.kill(-pid, 'SIGTERM'); } catch {
+      try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
+    }
+    fs.rmSync(filePath, { force: true });
+  }
 
-    try {
-      const stateId = await fetchTicketStateId(board, identifier);
-      if (stateId === statesFor(board).done) {
-        log(chalk.dim(`[${timestamp()}] ⏹ Killing orphaned agent for ${identifier} (Done, PID ${pid})`));
-        try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
-        fs.rmSync(filePath, { force: true });
-      }
-    } catch { /* ignore */ }
+  // ── Pass 2: rogue claude / node / bash by worktree-path match ─────────────
+  //
+  // If a poller crashed before writing the pid file, or if a hot-reload chain
+  // dropped a tracking record, the pid-file pass misses those PIDs. Walk every
+  // process on the system and match against the configured worktrees roots so
+  // we catch leftover `claude`, `python3 pty-wrapper.py`, `bash run-ticket.sh`,
+  // and nested tool subprocesses by their argv. Skip anything the live
+  // runningAgents map already manages (its descendants share the same path).
+  const rows = snapshotPsByCommand();
+  const prefixes = boards
+    .flatMap((b) => b.repos)
+    .map((repo) => repo.worktreesDir.replace(/^~/, process.env['HOME'] ?? '~'))
+    .filter((p, i, arr) => arr.indexOf(p) === i);
+  const skip = new Set<number>([process.pid]);
+  for (const { proc } of runningAgents.values()) {
+    if (proc.pid !== undefined) skip.add(proc.pid);
+  }
+  const orphans = findOrphanPidsByWorktreePrefix(rows, prefixes, skip);
+  // Stable per-cycle log line: list how many orphans we found rather than one
+  // line each, which would spam the dashboard on a cold start.
+  if (orphans.length > 0) {
+    log(chalk.dim(`[${timestamp()}] ⏹ Reaping ${orphans.length} orphan(s) under known worktrees`));
+    for (const { pid } of orphans) {
+      try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
+    }
+  }
+
+  // ── Pass 3: nx daemons — always detached, never share a PGID ──────────────
+  //
+  // Reuse the same ps snapshot. AC 2 requires explicit cleanup even when no
+  // poller-tracked agent matched, because nx daemons survive long past the
+  // node process that forked them.
+  const nxPids = findNxDaemonPids(rows);
+  if (nxPids.length > 0) {
+    log(chalk.dim(`[${timestamp()}] ⏹ Stopping ${nxPids.length} stale nx daemon(s)`));
+    for (const pid of nxPids) {
+      try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
+    }
   }
 }
 
@@ -2100,7 +2187,13 @@ process.on('SIGINT', async () => {
 
   const pidKills: Promise<void>[] = [];
   for (const { proc } of runningAgents.values()) {
-    proc.kill('SIGTERM');
+    if (proc.pid === undefined) continue;
+    // run-ticket.sh re-execs through setsid, so proc.pid is the PGID leader.
+    // Signalling the negative PID hits every descendant — claude, MCP servers,
+    // nested shells — instead of just the bash, which used to die fast and
+    // leave its children for launchd to adopt.
+    try { process.kill(-proc.pid, 'SIGTERM'); }
+    catch { try { proc.kill('SIGTERM'); } catch { /* already gone */ } }
     pidKills.push(new Promise<void>((resolve) => proc.on('exit', () => resolve())));
   }
 
@@ -2112,13 +2205,30 @@ process.on('SIGINT', async () => {
       const filePath = path.join(logsDir, file);
       const pid = parseInt(fs.readFileSync(filePath, 'utf8').trim(), 10);
       if (!isNaN(pid) && !trackedPids.has(pid) && isPidAlive(pid)) {
-        try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
+        try { process.kill(-pid, 'SIGTERM'); } catch {
+          try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
+        }
       }
       fs.rmSync(filePath, { force: true });
     }
   }
 
-  await Promise.all(pidKills);
+  // Best-effort sweep of nx daemons spawned by any agent — they detach into
+  // their own session, so the PGID kill above does not reach them.
+  killOrphanedNxDaemons();
+
+  // Wait up to 5s for children to exit cleanly, then escalate to SIGKILL on
+  // the same PGIDs. 100ms (the previous value) was nowhere near enough for
+  // claude to flush MCP state, leaving zombies on every SIGINT.
+  await Promise.race([
+    Promise.all(pidKills),
+    sleep(5000),
+  ]);
+  for (const { proc } of runningAgents.values()) {
+    if (proc.pid === undefined) continue;
+    try { process.kill(-proc.pid, 'SIGKILL'); } catch { /* already gone */ }
+  }
+
   console.log(chalk.yellow('[symphony] Stopped.'));
   process.exit(0);
 });
