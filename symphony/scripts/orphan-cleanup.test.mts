@@ -81,10 +81,12 @@ test('findOrphanPidsByWorktreePrefix exposes live-agent descendants — callers 
   const rows = [
     { pid: 100, command: 'bash /Users/sun/Documents/claude-home-worktrees/feat-UP-789/run-ticket.sh' },
     { pid: 101, command: 'claude --resume xxx (cwd=/Users/sun/Documents/claude-home-worktrees/feat-UP-789)' },
-    { pid: 102, command: 'python3 /Users/sun/symphony/scripts/pty-wrapper.py /tmp/x' }, // matches by symphony path
+    { pid: 102, command: 'python3 /Users/sun/symphony/scripts/pty-wrapper.py /tmp/x' },
   ];
-  // skip only the tracked bash; the claude descendant is intentionally NOT
-  // skipped at this layer — and must be excluded by the caller.
+  // skip only the tracked bash; the claude descendant (PID 101) is
+  // intentionally NOT skipped at this layer — and must be excluded by the
+  // caller via liveAgentWorktreePaths(). PID 102 isn't under the configured
+  // worktrees prefix and is correctly ignored by the helper itself.
   const orphans = findOrphanPidsByWorktreePrefix(
     rows,
     ['/Users/sun/Documents/claude-home-worktrees'],
