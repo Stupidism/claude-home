@@ -34,7 +34,7 @@ JIRA_BASE_URL=$(jq -r '.jira.baseUrl' "$BOARD_FILE")
 | Delete a comment | **No MCP tool** — use the REST fallback (`DELETE /rest/api/3/issue/{key}/comment/{id}`) |
 | List available transitions | `mcp__mcp-atlassian__jira_get_transitions` |
 | Transition ticket state | `mcp__mcp-atlassian__jira_transition_issue` with the transition `id` returned above |
-| Create a new ticket | `mcp__mcp-atlassian__jira_create_issue` (see `$SKILLS_ROOT/new-ticket/SKILL.md` for the canonical example) |
+| Create a new ticket | `mcp__mcp-atlassian__jira_create_issue`; for Symphony ticket creation follow `$SKILLS_ROOT/new-ticket/SKILL.md`, which creates the issue unassigned, immediately calls `jira_transition_issue` to reach Backlog, verifies the state, then assigns |
 
 State name → transition mapping: list current transitions and pick the one whose target status matches the desired Symphony state (`In Progress`, `Human Review`, …). The `jira.transitions` block in the board config holds the static IDs if you prefer to skip the lookup.
 

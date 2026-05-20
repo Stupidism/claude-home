@@ -37,7 +37,7 @@ Pull these fields:
 | `assigneeId` | `boards/<x>.json` → fallback `symphony.json` | who to assign to so the poller actually picks it up |
 | `assigneeEmail` | `boards/<x>.json` (Jira only) | the **email** to pass to `jira_update_issue` — see Step 4 |
 | `states.backlog` | `boards/<x>.json` (Linear UUID) / `"Backlog"` (Jira name) | initial state — see Step 3 for why |
-| `transitions.backlog` | `boards/<x>.json` (Jira only) | transition ID to apply on creation (Jira defaults new issues to "To Do") |
+| `transitions.backlog` | `boards/<x>.json` (Jira only) | transition ID to apply immediately after creation (Jira defaults new issues to "To Do") |
 
 ### 3. Create the ticket
 
@@ -45,19 +45,22 @@ Pull these fields:
 
 **Jira (UP):**
 
-Jira always creates new issues in "To Do" regardless of what you ask for, so you MUST also pass a `transition` to move it to Backlog in the same call.
+Jira always creates new issues in "To Do" regardless of what you ask for, and `jira_create_issue` does not accept a transition. Create the issue unassigned, then immediately call `jira_transition_issue` with the board config's Backlog transition before assigning it.
+
+**Do not assign the ticket during the create call.** Even when `createJiraIssue` accepts `assignee_account_id`, Jira can briefly expose the issue as assigned to you before the Backlog transition finishes. That is enough for the poller to grab it on the next cycle. Create it unassigned, land it in Backlog first, verify that state, and only then assign it to yourself.
 
 ```text
-mcp__claude_ai_Atlassian__createJiraIssue
-  cloudId              = <from getAccessibleAtlassianResources>
-  projectKey           = ticketPrefix (uppercase)
-  summary              = <user-provided title>
-  issueTypeName        = "Task"   # or "Bug" if user explicitly says it's a bug
-  description          = <markdown body>
-  contentFormat        = "markdown"
-  assignee_account_id  = <assigneeId from board config>
-  transition           = { "id": "<transitions.backlog from board config>" }   # e.g. "101" for UP
-  additional_fields    = { "labels": ["project:symphony"] }   # only if this is symphony work
+mcp__mcp-atlassian__jira_create_issue
+  project_key       = ticketPrefix (uppercase)
+  summary           = <user-provided title>
+  issue_type        = "Task"   # or "Bug" if user explicitly says it's a bug
+  description       = <markdown body>
+  assignee          = null
+  additional_fields = { "labels": ["project:symphony"] }   # only if this is symphony work
+
+mcp__mcp-atlassian__jira_transition_issue
+  issue_key      = "<NEW_KEY>"
+  transition_id  = "<transitions.backlog from board config>"   # e.g. "101" for UP
 ```
 
 **Linear (WOR):**
@@ -72,20 +75,29 @@ mcp__linear-server__create_issue
   labels     = ["project:symphony"]   # only if this is symphony work
 ```
 
-### 4. ⚠️ Always verify and re-assign
+### 4. ⚠️ Verify Backlog first, then assign
 
-**This is the most-forgotten step.** Jira's `jira_create_issue` silently drops the `assignee` field — the ticket comes back as `Unassigned`. Linear's `create_issue` honors `assignee` but typos in the UUID also silently fail.
+**This is the most-forgotten step.** Jira creation has two separate hazards: assigning too early can let the poller steal the ticket before it reaches Backlog, and assigning with the wrong field format can leave it `Unassigned`. Linear's `create_issue` honors `assignee` but typos in the UUID also silently fail.
 
 Always do this immediately after creation:
 
 ```text
-# Jira: re-assign by email read from board config's `assigneeEmail` field.
-# The Jira Cloud API technically accepts accountId, but the mcp-atlassian
-# wrapper returns "Issue updated successfully" yet leaves the issue Unassigned
-# for both raw accountIds and the "accountid:<id>" prefix form — verified
-# empirically on 2026-05-13. Email is the only format that has ever produced
-# a non-empty `assignee` on read-back. Do NOT "fix" this back to accountId
-# without re-verifying via jira_get_issue.
+mcp__mcp-atlassian__jira_get_issue
+  issue_key = "<NEW_KEY>"
+  fields    = "summary,status,assignee,labels"
+
+# Confirm `status.name == "Backlog"` before assigning. If Jira still shows
+# "To Do", call jira_transition_issue with `transitions.backlog` and read it
+# back again. Do not assign a non-Backlog ticket to yourself, or the poller can
+# claim it immediately.
+#
+# Jira: once Backlog is confirmed, assign by email read from board config's
+# `assigneeEmail` field. The Jira Cloud API technically accepts accountId, but
+# the mcp-atlassian wrapper returns "Issue updated successfully" yet leaves the
+# issue Unassigned for both raw accountIds and the "accountid:<id>" prefix form
+# — verified empirically on 2026-05-13. Email is the only format that has ever
+# produced a non-empty `assignee` on read-back. Do NOT "fix" this back to
+# accountId without re-verifying via jira_get_issue.
 #
 # If `assigneeEmail` is missing from board config, stop and ask the user to
 # add it — do NOT fall back to conversation-context email (CLAUDE.md
@@ -104,8 +116,8 @@ mcp__linear-server__get_issue id=<NEW_KEY>
 
 Then look at the read-back response and confirm:
 
-- `assignee.display_name` is NOT `"Unassigned"`
 - `status.name` (Jira) / `state.name` (Linear) matches what you set
+- `assignee.display_name` is NOT `"Unassigned"`
 - `labels` includes `project:symphony` (for symphony tickets)
 
 If any of those fail, fix before reporting success to the user.
@@ -124,7 +136,8 @@ For Jira, write in plain markdown — the MCP converts to wiki syntax automatica
 
 ## Common pitfalls (the why behind the verify step)
 
-- **Jira `assignee` dropped on create** — confirmed empirically; must follow up with `jira_update_issue` using **email**, then `jira_get_issue` to verify. AccountId formats look like they succeed but leave the issue Unassigned (see Step 4).
-- **Jira default state is "To Do", not Backlog** — `createJiraIssue` always lands in "To Do" first, regardless of what you pass. To start in Backlog (the desired default), pass `transition: { id: "<transitions.backlog>" }` in the create call itself. Don't try to fix via `editJiraIssue` after — Jira uses workflow transitions, not direct status edits. Verify via `getJiraIssue` that `status.name == "Backlog"` before reporting success.
+- **Jira assignment can race the poller** — if the ticket is assigned to you before it is safely in Backlog, the poller can claim it during that gap. Keep the create call unassigned, verify `status.name == "Backlog"`, then assign.
+- **Jira assignment by accountId still fails in practice** — once the ticket is in Backlog, re-assign with `jira_update_issue` using **email**, then `jira_get_issue` to verify. AccountId formats look like they succeed but leave the issue Unassigned (see Step 4).
+- **Jira default state is "To Do", not Backlog** — `jira_create_issue` always lands in "To Do" first and does not accept a transition argument. To start in Backlog (the desired default), create the issue unassigned, then immediately call `jira_transition_issue` with `transitions.backlog`. Don't try to fix via `editJiraIssue` after — Jira uses workflow transitions, not direct status edits.
 - **Missing `project:symphony` label** — without it, dashboards filtering by label won't see the ticket. Always add for symphony work.
 - **Wrong assigneeId for the board** — `symphony.json` has a Linear UUID; `boards/up.json` has a Jira accountId. Don't cross them. (And even on Jira, accountId only goes into the *config*, not into the assign API call — see above.)
