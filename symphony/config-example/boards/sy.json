@@ -1,0 +1,63 @@
+{
+  "_comment": "Example trial GitHub Projects board (UP-795 §3.6). Copy to config/boards/sy.json and fill in real values. The synthetic `SY` prefix distinguishes Symphony tickets from the GitHub issue numbering they wrap — Symphony surfaces them as SY-<issue_number>. Fill in githubProjects.projectNumber after creating the ProjectV2 on the team org; AC2 validation (UP-799) is gated on this.",
+  "teamId": "SY",
+  "name": "SY",
+  "ticketPrefix": "SY",
+  "ticketSystem": "github-projects",
+  "assigneeId": "Stupidism",
+  "githubProjects": {
+    "owner": "Stupidism",
+    "projectNumber": 0,
+    "repo": "Stupidism/claude-home",
+    "statusField": "Status",
+    "states": {
+      "backlog": "Backlog",
+      "todo": "Todo",
+      "inProgress": "In Progress",
+      "humanReview": "Human Review",
+      "rework": "Rework",
+      "merging": "Merging",
+      "done": "Done",
+      "cancelled": "Cancelled"
+    }
+  },
+  "defaultRepo": "claude-home",
+  "repos": [
+    {
+      "name": "claude-home",
+      "description": "Symphony 自治 agent 系统的脚本和配置（~/symphony 目录），以及 Claude Code 全局设置（CLAUDE.md、keybindings 等）。所有 SY 自动化工作流相关改动都在这里。",
+      "path": "~",
+      "worktreesDir": "~/Documents/claude-home-worktrees",
+      "defaultBranch": "main",
+      "isMono": false,
+      "setup": {
+        "symlinkNodeModules": false,
+        "installCommand": "",
+        "installCheck": ""
+      },
+      "githubRepo": "Stupidism/claude-home",
+      "github": {
+        "codeReviewComment": "@codex review in short words"
+      }
+    }
+  ],
+  "projects": [
+    {
+      "name": "Symphony",
+      "primaryRepo": "claude-home",
+      "githubProjects": {
+        "projectLabel": "project:symphony"
+      },
+      "repos": [
+        {
+          "name": "claude-home",
+          "path": "~/symphony",
+          "hint": "Symphony 自治 agent 系统的脚本和配置，所有 SY 自动化工作流相关改动都在这里"
+        }
+      ]
+    }
+  ],
+  "github": {
+    "codeReviewComment": "@codex review in short words"
+  }
+}

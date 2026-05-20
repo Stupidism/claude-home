@@ -1,11 +1,11 @@
 ---
 name: ticket
-description: Dispatcher for ticket-system operations. Routes to the right sub-skill (linear / jira) based on `$TICKET_SYSTEM`. Read this whenever a workflow step needs to interact with the ticket system — workpad CRUD, state transitions, comment reads, or sub-task creation.
+description: Dispatcher for ticket-system operations. Routes to the right sub-skill (linear / jira / github-projects) based on `$TICKET_SYSTEM`. Read this whenever a workflow step needs to interact with the ticket system — workpad CRUD, state transitions, comment reads, or sub-task creation.
 ---
 
 # Ticket System Dispatcher
 
-Symphony supports multiple ticket systems. Skills must go through this dispatcher rather than hard-coding Linear, so the same workflow runs against either Linear (`WOR-*`) or Jira (`UP-*`).
+Symphony supports multiple ticket systems. Skills must go through this dispatcher rather than hard-coding a backend, so the same workflow runs against Linear (`WOR-*`), Jira (`UP-*`), or GitHub Projects (e.g. `SY-*`).
 
 ## Routing
 
@@ -15,6 +15,7 @@ Inspect `$TICKET_SYSTEM` (exported by the poller — see `symphony/scripts/poll-
 |---|---|
 | `linear` (default) | `$SKILLS_ROOT/linear/SKILL.md` |
 | `jira` | `$SKILLS_ROOT/jira/SKILL.md` |
+| `github-projects` | `$SKILLS_ROOT/github-projects/SKILL.md` |
 
 If `$TICKET_SYSTEM` is unset, treat it as `linear`. If it is any other value, **stop and report the misconfiguration** — do not silently guess.
 
@@ -33,7 +34,7 @@ Both sub-skills expose the same intents with the same workpad template. The disp
 | Change ticket state | Symbolic state name (`Backlog` / `Todo` / `In Progress` / `Human Review` / `In Review` / `Rework` / `Merging` / `Done`) → system-specific ID or transition |
 | Create a new ticket (sub-task) | Used by `read-and-plan` when splitting large work; link to parent when supported |
 
-The **workpad template** is defined once in `$SKILLS_ROOT/linear/SKILL.md` under `## Workpad`. The Jira sub-skill reuses the same template verbatim — only the transport differs.
+The **workpad template** is defined once in `$SKILLS_ROOT/linear/SKILL.md` under `## Workpad`. The Jira and GitHub Projects sub-skills reuse the same template verbatim — only the transport differs.
 
 ## When to read which sub-skill
 
