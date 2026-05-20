@@ -195,6 +195,17 @@ fi
 if [ -n "${SETUP_INSTALL_CHECK:-}" ] && [ -n "${SETUP_INSTALL_COMMAND:-}" ]; then
   if ! git diff --quiet "refs/remotes/origin/${DEFAULT_BRANCH}" -- "$SETUP_INSTALL_CHECK" 2>/dev/null; then
     echo "[run] ${SETUP_INSTALL_CHECK} differs from origin/${DEFAULT_BRANCH} — running install..."
+    # nvm is a shell function loaded from nvm.sh; non-interactive bash never
+    # sources it on its own. Source it here so installCommands like
+    # `nvm use && npm install` resolve. Guarded by `set +u` because some nvm
+    # versions reference unbound vars during init.
+    NVM_SH_PATH="${NVM_DIR:-$HOME/.nvm}/nvm.sh"
+    if [ -s "$NVM_SH_PATH" ]; then
+      set +u
+      # shellcheck disable=SC1090
+      . "$NVM_SH_PATH"
+      set -u
+    fi
     eval "$SETUP_INSTALL_COMMAND"
   else
     echo "[run] Dependencies up to date, skipping install."
