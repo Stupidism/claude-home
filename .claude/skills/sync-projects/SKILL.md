@@ -1,27 +1,44 @@
 ---
 name: sync-projects
-description: Fetch all Linear projects for a board, match each to a code repo or monorepo sub-path, and merge new entries into the board config. Run whenever new Linear projects have been created and the board config does not yet include them.
+description: Fetch all projects for a board (Linear projects or Jira `project:*` labels), match each to a code repo or monorepo sub-path, and merge new entries into the board config. Run whenever new projects/labels have been created and the board config does not yet include them.
 ---
 
-# Sync Linear Projects → board config
+# Sync Projects → board config
+
+Works for both ticket systems. The board file's `ticketSystem` field decides how projects are discovered:
+
+| `ticketSystem` | Project source |
+|---|---|
+| `linear` | Linear's `team.projects` GraphQL query (each project has a UUID) |
+| `jira` | Distinct `project:<name>` labels used on the board's tickets (the `<name>` slug is the identifier) |
+
+The downstream steps (matching to repo paths, generating entries, merging into the config) are the same once you have the project list.
 
 ## When to run
 
-Use this skill after a new Linear project is created and you need to add it to
-`$SYMPHONY_ROOT/config/boards/<board>.json`.
+Use this skill after a new project (Linear) or `project:*` label (Jira) is introduced and you need to add it to `$SYMPHONY_ROOT/config/boards/<board>.json`.
 
 ---
 
-## Step 1 — Identify the board file and fetch all Linear projects
+## Step 1 — Identify the board file and fetch all projects
 
 ```bash
-LINEAR_API_KEY="${LINEAR_API_KEY:-$(grep LINEAR_API_KEY $SYMPHONY_ROOT/secrets.env | cut -d= -f2)}"
-
 # List available board configs and pick the right one
 ls $SYMPHONY_ROOT/config/boards/*.json | grep -v example
 
 # Set BOARD_FILE to the relevant board config, e.g.:
 # BOARD_FILE="${SYMPHONY_ROOT}/config/boards/<board>.json"
+TICKET_SYSTEM=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('$BOARD_FILE','utf8')).ticketSystem||'linear')")
+echo "ticketSystem=$TICKET_SYSTEM"
+```
+
+### Linear boards
+
+Prefer `mcp__linear-server__list_projects` (filter by team) when available. Curl fallback:
+
+```bash
+LINEAR_API_KEY="${LINEAR_API_KEY:-$(grep LINEAR_API_KEY $SYMPHONY_ROOT/secrets.env | cut -d= -f2)}"
+
 TEAM_ID=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('$BOARD_FILE','utf8')).teamId)")
 
 curl -s -X POST https://api.linear.app/graphql \
@@ -34,17 +51,49 @@ curl -s -X POST https://api.linear.app/graphql \
   "
 ```
 
-This prints every project's UUID and name.
+This prints every Linear project's UUID and name.
+
+### Jira boards
+
+Jira doesn't expose a "project" concept that matches Symphony's notion — Symphony uses `project:<name>` labels on issues to map a ticket to a `projects[]` entry. Discover the distinct labels in use by querying recent issues:
+
+Preferred: `mcp__mcp-atlassian__jira_search` with JQL `project = <ticketPrefix> AND labels is not EMPTY` and request `labels` in `fields`, then filter for the `project:` prefix in the result handler below. (Jira Cloud JQL does not support wildcards on `labels` — `labels in ("project:*")` would match the literal string `project:*` and return nothing.) Curl fallback (see `$SKILLS_ROOT/jira/SKILL.md` for the auth header):
+
+```bash
+JIRA_BASE_URL=$(jq -r '.jira.baseUrl' "$BOARD_FILE")
+PROJECT_KEY=$(jq -r '.ticketPrefix' "$BOARD_FILE")
+
+JQL=$(printf 'project = %s AND labels is not EMPTY' "$PROJECT_KEY" | jq -sRr @uri)
+curl -s -H "Authorization: $JIRA_AUTH" -H "Accept: application/json" \
+  "$JIRA_BASE_URL/rest/api/3/search?jql=${JQL}&fields=labels&maxResults=200" \
+  | node -e "
+    const d = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+    const slugs = new Set();
+    for (const issue of d.issues||[]) {
+      for (const l of issue.fields?.labels||[]) {
+        if (l.startsWith('project:')) slugs.add(l.slice('project:'.length));
+      }
+    }
+    [...slugs].sort().forEach(s => console.log('project:' + s, s));
+  "
+```
+
+The left column (`project:<name>`) is the identifier you'll store; the right column (`<name>`) is the human-readable slug to use when matching repo paths.
 
 ---
 
 ## Step 2 — Find projects not yet in the board config
 
+Each `projects[]` entry in the board config carries a system-specific identifier. The existing field name varies by board:
+
+- Linear boards store the project UUID under `projects[].linear.projectId` (or the legacy `projects[].linearProjectId`).
+- Jira boards store the matching `project:<name>` label under `projects[].jira.projectLabel` (or `projects[].linearProjectId` reused as a flat string — match `read-and-plan`'s lookup logic in the same board file).
+
 ```bash
 EXISTING_IDS=$(node -e "
   const base = JSON.parse(require('fs').readFileSync('$BOARD_FILE','utf8'));
-  const all = (base.projects||[]).map(p => p.linearProjectId);
-  process.stdout.write(all.join('\n'));
+  const all = (base.projects||[]).map(p => p.linear?.projectId || p.linearProjectId || p.jira?.projectLabel);
+  process.stdout.write(all.filter(Boolean).join('\n'));
 ")
 echo "Already mapped project IDs:"
 echo "$EXISTING_IDS"
@@ -74,7 +123,7 @@ ls "$MONO_ROOT/libs/" 2>/dev/null | sort
 
 ## Step 4 — Match projects to paths (inference rules)
 
-Apply these rules in order for each unmapped Linear project:
+Apply these rules in order for each unmapped project (use the Linear name or the Jira `<slug>`):
 
 1. **Exact name match** — normalize both sides: lowercase, replace spaces/hyphens/underscores with nothing.
    - `ws-components` → `wscomponents` matches `libs/ws-components` → `wscomponents`
@@ -118,11 +167,14 @@ REPO_NAME="${GITHUB_REPO##*/}"
 For a monorepo match, `primaryRepo` is the monorepo's `name` field from the board config; for a standalone-repo match, use that repo's `name`. Use `$REPO_NAME` directly — do not hardcode it.
 
 ```jsonc
-// New entries to add to the "projects" array in $BOARD_FILE:
+// New entries to add to the "projects" array in $BOARD_FILE.
+// Use the identifier shape that the rest of the board file already uses
+// (Linear: `linear.projectId` / legacy `linearProjectId`; Jira: `jira.projectLabel`).
 {
-  "linearProjectId": "<uuid-from-step-1>",
-  "name": "<Linear project name>",
+  "name": "<project name or label slug>",
   "primaryRepo": "$REPO_NAME",
+  "linear": { "projectId": "<uuid-from-step-1>" },           // Linear boards only
+  // "jira":   { "projectLabel": "project:<slug>" },         // Jira boards only
   "repos": [
     {
       "name": "$REPO_NAME",
@@ -138,15 +190,16 @@ For a monorepo match, `primaryRepo` is the monorepo's `name` field from the boar
 
 ## Step 7 — Merge into board config
 
-Add each new entry to the `projects` array in `$BOARD_FILE` (only projects whose `linearProjectId` is not already present):
+Add each new entry to the `projects` array in `$BOARD_FILE` (skip projects whose identifier is already present, regardless of which identifier shape the existing entry uses):
 
 ```bash
 node -e "
   const fs = require('fs');
   const config = JSON.parse(fs.readFileSync('$BOARD_FILE', 'utf8'));
-  const existing = new Set((config.projects||[]).map(p => p.linearProjectId));
+  const key = (p) => p.linear?.projectId || p.linearProjectId || p.jira?.projectLabel;
+  const existing = new Set((config.projects||[]).map(key).filter(Boolean));
   const newEntries = [/* paste generated entries here */];
-  const toAdd = newEntries.filter(p => !existing.has(p.linearProjectId));
+  const toAdd = newEntries.filter(p => !existing.has(key(p)));
   config.projects = [...(config.projects||[]), ...toAdd];
   fs.writeFileSync('$BOARD_FILE', JSON.stringify(config, null, 2) + '\n');
   console.log('Added', toAdd.length, 'project(s):', toAdd.map(p => p.name).join(', '));
@@ -157,5 +210,5 @@ node -e "
 
 ## Notes
 
-- The poller (`poll-linear.mts`) reads the board config at startup — restart it after editing.
-- When a project is renamed in Linear, update the `name` field here to match.
+- The poller (`poll-tickets.mts`) reads each board config at startup — restart it after editing.
+- When a project is renamed (Linear) or a label is renamed (Jira), update the `name` and identifier fields here to match.

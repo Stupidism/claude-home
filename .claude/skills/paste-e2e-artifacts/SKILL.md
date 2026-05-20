@@ -1,20 +1,25 @@
 ---
 name: paste-e2e-artifacts
-description: Find Playwright E2E test screenshots and videos after tests run, upload them to Linear via file upload API, and return markdown for embedding in the workpad as proof of work.
+description: Find Playwright E2E test screenshots and videos after tests run, upload them to the ticket system (Linear file upload API for Linear tickets, Jira issue attachment API for Jira tickets), and return markdown for embedding in the workpad as proof of work.
 ---
 
 # Paste E2E Artifacts
 
-**Linear-only.** This skill uses Linear's `fileUpload` mutation, which has no Jira equivalent. Callers must skip this skill when `$TICKET_SYSTEM != linear` — `submit-for-review` already invokes it as best-effort, so a Jira ticket should simply not run it. On Jira tickets, log local artifact paths into the workpad through the ticket dispatcher instead.
+After running Playwright E2E tests, find generated screenshots/videos and upload them to the ticket system so they can be embedded in or linked from the workpad as proof of work.
+
+Route by `$TICKET_SYSTEM`:
+
+- **Linear** → Linear's `fileUpload` GraphQL mutation, embed inline in the workpad as Linear CDN URLs.
+- **Jira** → REST `POST /rest/api/3/issue/{key}/attachments`, then reference each attachment in the workpad by its `content` URL.
+
+Any other value of `$TICKET_SYSTEM`: skip cleanly.
 
 ```bash
-if [ "$TICKET_SYSTEM" != "linear" ]; then
-  echo "paste-e2e-artifacts is Linear-only; skipping for $TICKET_SYSTEM" >&2
-  exit 0
-fi
+case "${TICKET_SYSTEM:-linear}" in
+  linear|jira) ;;
+  *) echo "paste-e2e-artifacts: unknown TICKET_SYSTEM=$TICKET_SYSTEM, skipping" >&2; exit 0 ;;
+esac
 ```
-
-After running Playwright E2E tests, find generated screenshots/videos and upload them to Linear so they can be embedded in the workpad as proof of work.
 
 ## Step 1 — Find Artifacts
 
@@ -46,11 +51,15 @@ find "$WORKTREE_ROOT" \
   | head -5
 ```
 
-## Step 2 — Upload Each Artifact to Linear
+## Step 2 — Upload Each Artifact
 
-For each artifact file, run this sequence:
+Route by `$TICKET_SYSTEM`.
 
-### 2a — Get a presigned upload URL from Linear
+### Linear path
+
+For each artifact file, run this sequence.
+
+#### 2a — Get a presigned upload URL from Linear
 
 ```bash
 FILE_PATH="/path/to/artifact.png"
@@ -88,6 +97,39 @@ curl -s -X PUT "$UPLOAD_URL" \
 
 Save `$ASSET_URL` — this is the publicly accessible Linear CDN URL to embed in the workpad.
 
+### Jira path
+
+Jira accepts each file as a multipart upload to `POST /rest/api/3/issue/{key}/attachments`. The `X-Atlassian-Token: no-check` header is mandatory; the form field name must be `file`. Use the auth header / base URL defined in `$SKILLS_ROOT/jira/SKILL.md`.
+
+```bash
+JIRA_AUTH="Basic $(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 | tr -d '\n')"
+BOARD_FILE="$SYMPHONY_ROOT/config/boards/$(echo "$TICKET_ID" | cut -d- -f1 | tr A-Z a-z).json"
+JIRA_BASE_URL=$(jq -r '.jira.baseUrl' "$BOARD_FILE")
+
+for FILE_PATH in "${ARTIFACTS[@]}"; do
+  curl -s -X POST \
+    -H "Authorization: $JIRA_AUTH" \
+    -H "X-Atlassian-Token: no-check" \
+    -F "file=@${FILE_PATH}" \
+    "$JIRA_BASE_URL/rest/api/3/issue/$TICKET_ID/attachments"
+done
+```
+
+The response is a JSON array of attachment objects. For each one, save:
+
+- `filename` — original file name
+- `content` — direct URL to the binary (renders inline for images via Jira's CDN)
+- `mimeType` — used to decide whether to embed (`image/*`) or link (`video/*`)
+
+```bash
+ATTACHMENTS_JSON=$(curl -s ... )  # response from the POST above
+
+echo "$ATTACHMENTS_JSON" | node -e "
+  const arr = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+  for (const a of arr) console.log(a.filename, a.mimeType, a.content);
+"
+```
+
 ## Step 3 — Build Proof of Work Markdown
 
 After uploading all artifacts, build a markdown block:
@@ -97,23 +139,30 @@ After uploading all artifacts, build a markdown block:
 
 | File | Preview |
 |------|---------|
-| screenshot-name.png | ![screenshot-name](https://uploads.linear.app/...) |
-| video-name.webm | [video-name.webm](https://uploads.linear.app/...) |
+| screenshot-name.png | ![screenshot-name](<asset or attachment url>) |
+| video-name.webm | [video-name.webm](<asset or attachment url>) |
 ```
 
-For images (`.png`, `.jpg`): use `![filename](url)` — Linear renders inline.
-For videos (`.webm`): use `[filename](url)` — Linear does not render video inline.
+For images (`.png`, `.jpg`): use `![filename](url)` — both Linear and Jira render inline.
+For videos (`.webm`): use `[filename](url)` — neither system renders video inline.
+
+The URL comes from Step 2:
+
+- Linear → the `assetUrl` from the `fileUpload` mutation response (`https://uploads.linear.app/...`).
+- Jira → the `content` field on the attachment object returned by the attachments POST (`<jira.baseUrl>/rest/api/3/attachment/content/<id>`).
 
 ## Step 4 — Append to Workpad
 
-Append the proof of work block to the existing workpad body (do not replace the whole workpad):
+Append the proof of work block to the existing workpad body (do not replace the whole workpad). Route through the ticket dispatcher — read `$SKILLS_ROOT/ticket/SKILL.md` and use the matching sub-skill's "Update comment" intent:
 
-1. Read the current workpad body (from the comment ID saved earlier)
-2. Append the `### E2E Proof of Work` section before `### Notes`
-3. Update the comment via `commentUpdate` (see `$SKILLS_ROOT/linear/SKILL.md`)
+1. Find the existing `## Claude Workpad` comment id (list comments via the dispatcher)
+2. Read its current body
+3. Insert the `### E2E Proof of Work` block before `### Notes`
+4. Push the updated body back through the dispatcher
 
 ## Notes
 
-- If the Linear `fileUpload` mutation returns an error (e.g. file too large), skip that file and log a warning.
+- If the upload returns an error (Linear: `fileUpload` mutation; Jira: attachments POST — e.g. file too large), skip that file and log a warning.
 - Videos are often large (>10 MB); if upload fails, log the local file path in the workpad instead.
 - This skill is best-effort — if no artifacts exist or all uploads fail, continue to submit-for-review without blocking.
+- Jira attachments are gated by issue-level browse permissions. If the ticket is private, attachment URLs won't be accessible to outsiders — same trust model as Jira inline images.

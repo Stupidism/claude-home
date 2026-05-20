@@ -1,6 +1,6 @@
 ---
 name: linear-template
-description: Sync Linear issue templates from config/linear-templates.json to the Linear workspace. Run this whenever the template definitions change.
+description: Sync Linear issue templates from config/linear-templates.json to the Linear workspace. Linear-only by design — Jira issue templates are managed through Jira's own UI / REST and are not in this skill's scope. Run this whenever the template definitions change.
 ---
 
 # Linear Template Sync
@@ -8,6 +8,17 @@ description: Sync Linear issue templates from config/linear-templates.json to th
 Syncs the issue templates defined in `$SYMPHONY_ROOT/config/linear-templates.json` to Linear using the API.
 
 > **When to run:** After editing `linear-templates.json`, or to verify templates in Linear match the config.
+
+> **Scope:** Linear-only. Jira issue templates use a different system (per-project request types / screen schemes) and are managed via Jira's UI; there is no Jira equivalent of `templateCreate` / `templateUpdate`. If `$TICKET_SYSTEM` is set to anything other than `linear`, bail out:
+>
+> ```bash
+> if [ -n "${TICKET_SYSTEM:-}" ] && [ "$TICKET_SYSTEM" != "linear" ]; then
+>   echo "linear-template is Linear-only; current TICKET_SYSTEM=$TICKET_SYSTEM, skipping" >&2
+>   exit 0
+> fi
+> ```
+>
+> The skill is normally run as a one-off sync (no ticket context), in which case `$TICKET_SYSTEM` is unset — proceed as usual.
 
 ---
 
