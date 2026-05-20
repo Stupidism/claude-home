@@ -1,6 +1,6 @@
 ---
 name: cleanup-tickets
-description: Sweep local worktrees and branches across all repos, detect merged PRs, transition tickets to Done, and delete stale local/remote branches. Run this to recover from tickets stuck in Merging or to bulk-clean up after a sprint. Works against both Linear (`WOR-*`) and Jira (`UP-*`) boards via the ticket dispatcher.
+description: Sweep local worktrees and branches across all repos, detect merged PRs, transition tickets to Done, and delete stale local/remote branches. Run this to recover from tickets stuck in Merging or to bulk-clean up after a sprint. Works against Linear (`WOR-*`), Jira (`UP-*`), and GitHub Projects (e.g. `SY-*`) boards via the ticket dispatcher.
 ---
 
 # Cleanup Tickets
@@ -9,7 +9,7 @@ Scans all repos for local branches/worktrees that contain a ticket ID, checks ea
 
 > **When to use:** After a batch of PRs were merged without Symphony detecting them (e.g. the ticket system wasn't connected to GitHub, or the poller was down), run this skill to reconcile state.
 
-All ticket reads/writes go through `$SKILLS_ROOT/ticket/SKILL.md` — do not call Linear or Jira APIs directly. The dispatcher routes to the matching sub-skill based on each board's `ticketSystem`.
+All ticket reads/writes go through `$SKILLS_ROOT/ticket/SKILL.md` — do not call Linear, Jira, or GitHub APIs directly. The dispatcher routes to the matching sub-skill based on each board's `ticketSystem`.
 
 ---
 
@@ -24,9 +24,9 @@ ls $SYMPHONY_ROOT/config/boards/
 For each board config (e.g. `wor.json`, `up.json`), note:
 
 - `ticketPrefix` (e.g. `WOR`, `UP`) — used to match branch names and to set the per-board `$TICKET_SYSTEM` when invoking the dispatcher
-- `ticketSystem` — `linear` or `jira`
+- `ticketSystem` — `linear`, `jira`, or `github-projects`
 - `repos[]` — each entry has `path`, `worktreesDir`, `defaultBranch`, `githubRepo`
-- The `Done` state identifier: `linear.states.done` (Linear UUID) or `jira.states.done` + `jira.transitions.done` (Jira name and numeric transition ID)
+- The `Done` state identifier: `linear.states.done` (Linear UUID), `jira.states.done` + `jira.transitions.done` (Jira name and numeric transition ID), or `githubProjects.states.done` (ProjectV2 option name)
 
 Export `TICKET_SYSTEM` to match the board you are processing before each ticket-system call — the dispatcher reads it.
 
@@ -64,6 +64,7 @@ Set `TICKET_ID` to the candidate, set `TICKET_SYSTEM` to the matching board's `t
 
 - **Linear** → `mcp__linear-server__get_issue id=$TICKET_ID` (curl fallback in `$SKILLS_ROOT/linear/SKILL.md`)
 - **Jira** → `mcp__mcp-atlassian__jira_get_issue issue_key=$TICKET_ID` (curl fallback in `$SKILLS_ROOT/jira/SKILL.md`)
+- **GitHub Projects** → `mcp__github__issue_read method=get` against the issue number embedded in `$TICKET_ID` (see `$SKILLS_ROOT/github-projects/SKILL.md`). The ticket's *state* lives on the ProjectV2 item, not the issue — read the Status field via GraphQL.
 
 Skip tickets already in **Done** state — they just need worktree cleanup (Step 4), no ticket update needed.
 
@@ -101,6 +102,7 @@ Read `$SKILLS_ROOT/ticket/SKILL.md` and pass the symbolic state `Done` (or `$STA
 
 - **Linear** → `mcp__linear-server__update_issue id=$TICKET_ID state="Done"`
 - **Jira** → list transitions via `mcp__mcp-atlassian__jira_get_transitions`, pick the one whose target status name matches `Done`, then `mcp__mcp-atlassian__jira_transition_issue`. The numeric transition ID is also cached in the board config under `jira.transitions.done`.
+- **GitHub Projects** → no MCP equivalent. Use the ProjectV2 `updateProjectV2ItemFieldValue` GraphQL mutation with the `Done` option id (see `$SKILLS_ROOT/github-projects/SKILL.md`).
 
 ### Clean up worktree
 
@@ -154,4 +156,4 @@ Then run Steps 3–4 for each branch, looking up the ticket ID from the branch n
 - This skill is safe to run multiple times — it skips tickets already in Done state.
 - Always prefer `--force` when removing worktrees (they contain `.claude-session-id` which is untracked by design).
 - If a worktree directory is missing but the git reference still exists, `git worktree prune` cleans it up.
-- If `$STATE_DONE` is not set in the environment (the env vars are only set when the poller spawned the session), look it up from `$SYMPHONY_ROOT/config/boards/<board>.json` — `linear.states.done` for Linear boards, `jira.states.done` and `jira.transitions.done` for Jira boards.
+- If `$STATE_DONE` is not set in the environment (the env vars are only set when the poller spawned the session), look it up from `$SYMPHONY_ROOT/config/boards/<board>.json` — `linear.states.done` for Linear boards, `jira.states.done` and `jira.transitions.done` for Jira boards, `githubProjects.states.done` for github-projects boards.

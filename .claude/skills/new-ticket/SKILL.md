@@ -31,12 +31,13 @@ Pull these fields:
 
 | Field | Source | Used for |
 |---|---|---|
-| `ticketSystem` | `boards/<x>.json` | `"jira"` → Jira MCP; `"linear"` → Linear MCP |
-| `ticketPrefix` | `boards/<x>.json` | Jira `project_key` (uppercase) |
+| `ticketSystem` | `boards/<x>.json` | `"jira"` → Jira MCP; `"linear"` → Linear MCP; `"github-projects"` → GitHub MCP + ProjectV2 GraphQL |
+| `ticketPrefix` | `boards/<x>.json` | Jira `project_key` (uppercase); github-projects: shown in identifier (`SY-42`) |
 | `teamId` | `boards/<x>.json` (Linear) | Linear `teamId` |
 | `assigneeId` | `boards/<x>.json` → fallback `symphony.json` | who to assign to so the poller actually picks it up |
 | `assigneeEmail` | `boards/<x>.json` (Jira only) | the **email** to pass to `jira_update_issue` — see Step 4 |
-| `states.backlog` | `boards/<x>.json` (Linear UUID) / `"Backlog"` (Jira name) | initial state — see Step 3 for why |
+| `githubProjects.owner`, `githubProjects.projectNumber`, `githubProjects.repo`, `githubProjects.statusField` | `boards/<x>.json` (github-projects only) | project coordinates + status single-select field |
+| `states.backlog` | `boards/<x>.json` (Linear UUID) / `"Backlog"` (Jira name) / option name (github-projects, e.g. `"Backlog"`) | initial state — see Step 3 for why |
 | `transitions.backlog` | `boards/<x>.json` (Jira only) | transition ID to apply immediately after creation (Jira defaults new issues to "To Do") |
 
 ### 3. Create the ticket
@@ -75,6 +76,41 @@ mcp__linear-server__create_issue
   labels     = ["project:symphony"]   # only if this is symphony work
 ```
 
+**GitHub Projects (SY etc.):**
+
+GitHub Issues don't carry the Symphony state on themselves — state lives in a `Status` single-select field on the ProjectV2 the issue is added to. Creating the issue is a three-step sequence: create the issue (unassigned), add it to the project, then set the `Status` field to `Backlog`. Only assign once Status=Backlog has been verified — same hazard as Jira: an assigned ticket in the wrong column gets claimed by the poller before you can roll it back.
+
+```text
+# 1. Create the issue, unassigned. Use mcp__github__issue_write so labels
+#    and body go through one call; do not pass `assignees` yet.
+mcp__github__issue_write
+  method = "create"
+  owner  = "<githubProjects.owner>"
+  repo   = "<githubProjects.repo's name part, after the slash>"
+  title  = <user-provided title>
+  body   = <markdown body>
+  labels = ["project:symphony"]   # only if this is symphony work
+# → response includes node_id (issue's GraphQL ID) and number.
+
+# 2. Add the new issue to the ProjectV2. There is no MCP tool for this —
+#    resolve the project's GraphQL ID and call addProjectV2ItemById.
+#    See $SKILLS_ROOT/github-projects/SKILL.md → "State transitions" for the
+#    schema lookup query. The mutation:
+#
+#    mutation($p:ID!,$c:ID!){
+#      addProjectV2ItemById(input:{projectId:$p,contentId:$c}){ item{ id } }
+#    }
+#
+#    variables: { p: <projectId>, c: <issue node_id> }
+#    → response includes the new projectV2Item.id — the item id you need next.
+
+# 3. Set Status = Backlog on the new project item. Same updateProjectV2ItemFieldValue
+#    mutation the adapter uses (see github-projects/SKILL.md). Pull the option id
+#    for githubProjects.states.backlog ("Backlog") out of the schema fetch above.
+```
+
+Only after Step 3 succeeds — verified by re-reading the item's `Status` field — call `mcp__github__issue_write method=update assignees=[<assigneeId from board config>]` to assign the issue. GitHub assignees are usernames (logins), not numeric IDs.
+
 ### 4. ⚠️ Verify Backlog first, then assign
 
 **This is the most-forgotten step.** Jira creation has two separate hazards: assigning too early can let the poller steal the ticket before it reaches Backlog, and assigning with the wrong field format can leave it `Unassigned`. Linear's `create_issue` honors `assignee` but typos in the UUID also silently fail.
@@ -112,6 +148,11 @@ mcp__mcp-atlassian__jira_get_issue
 
 # Linear: included in create_issue, but read back to confirm.
 mcp__linear-server__get_issue id=<NEW_KEY>
+
+# GitHub Projects: re-read the issue and the ProjectV2 item's Status field.
+# Use mcp__github__issue_read method=get to confirm assignees, then re-run the
+# ProjectV2 items query (see $SKILLS_ROOT/github-projects/SKILL.md) to confirm
+# Status == "Backlog" on the item.
 ```
 
 Then look at the read-back response and confirm:
@@ -124,7 +165,7 @@ If any of those fail, fix before reporting success to the user.
 
 ### 5. Report to user
 
-One-liner with the URL and the next action. For UP: `https://workstreamhq.atlassian.net/browse/<KEY>`. For WOR: `https://linear.app/workstream/issue/<KEY>`.
+One-liner with the URL and the next action. For UP: `https://workstreamhq.atlassian.net/browse/<KEY>`. For WOR: `https://linear.app/workstream/issue/<KEY>`. For github-projects boards: the issue's HTML URL (from the create response, of the form `https://github.com/<owner>/<repo>/issues/<number>`).
 
 If the poller is currently down (the user mentioned a crash, or it was the reason the ticket exists), remind them to restart it — the poller has to be running for Symphony to pick the ticket up.
 
