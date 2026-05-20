@@ -600,7 +600,8 @@ async function resetReworkTicket(issue: Issue, board: BoardConfig): Promise<void
     const staleComments = comments.filter((c) =>
       c.body.includes('## Claude Workpad') ||
       c.body.startsWith('[symphony] aiReviewRequested:') ||
-      c.body.startsWith('[symphony] developerApproved:')
+      c.body.startsWith('[symphony] developerApproved:') ||
+      c.body.startsWith('[symphony] feedbackReroute:')
     );
     await Promise.all(staleComments.map((c) => adapter.deleteComment(board, issue.id, c.id)));
     if (staleComments.length) {
