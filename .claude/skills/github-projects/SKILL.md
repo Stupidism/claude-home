@@ -14,7 +14,7 @@ GitHub Projects = ProjectV2. State lives in a single-select field (default `Stat
 | Var | Source | Purpose |
 |---|---|---|
 | `$TICKET_ID` | poller | Symphony ticket key, e.g. `SY-42` (`<ticketPrefix>-<issue_number>`) |
-| `$GITHUB_TOKEN` | `secrets.env` | Fine-grained PAT — needs Issues:write, Projects:write, Metadata:read on the configured repo + project |
+| `$GITHUB_TOKEN` | `secrets.env` | Fine-grained PAT — needs Issues:write, Projects:read, Projects:write, Metadata:read on the configured repo + project (write does NOT imply read for ProjectV2 — both are needed) |
 
 The board config at `$SYMPHONY_ROOT/config/boards/<board>.json` carries the GitHub-side coordinates under `githubProjects.{owner,projectNumber,repo,statusField,states}`. Read it whenever you need the project ID, status field name, or option name for a Symphony state:
 
@@ -44,13 +44,13 @@ The Symphony adapter packs `<projectItemId>|<owner/repo>|<issueNumber>` as the o
 | Get ticket details | `mcp__github__issue_read` `method=get` | Pass `owner`, `repo`, `issue_number`. Comments come back via a separate `get_comments` call. |
 | List comments | `mcp__github__issue_read` `method=get_comments` | Paginate via `page` / `perPage`. |
 | Create a comment (workpad) | `mcp__github__add_issue_comment` | Pass `body` as raw Markdown — GitHub renders it directly. |
-| Update a comment (workpad) | **No MCP tool** — use REST fallback (`PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}`) |
-| Delete a comment | **No MCP tool** — use REST fallback (`DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}`) |
-| List labels on a ticket | `mcp__github__issue_read` `method=get_labels` |
-| Add / remove labels | `mcp__github__issue_write` `method=update` with `labels` (full replace) |
-| Create a new ticket | `mcp__github__issue_write` `method=create`; for Symphony ticket creation follow `$SKILLS_ROOT/new-ticket/SKILL.md`, which creates the issue, adds it to the project, then sets the Status field to Backlog |
-| Add a sub-issue (parent link) | `mcp__github__sub_issue_write` `method=add` |
-| Change ticket state | **No MCP tool** — ProjectV2 single-select mutations require GraphQL (see below) |
+| Update a comment (workpad) | **No MCP tool** | Use REST fallback (`PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}`). |
+| Delete a comment | **No MCP tool** | Use REST fallback (`DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}`). |
+| List labels on a ticket | `mcp__github__issue_read` `method=get_labels` | — |
+| Add / remove labels | `mcp__github__issue_write` `method=update` with `labels` (full replace) | — |
+| Create a new ticket | `mcp__github__issue_write` `method=create` | For Symphony ticket creation follow `$SKILLS_ROOT/new-ticket/SKILL.md`, which creates the issue, adds it to the project, then sets the Status field to Backlog. |
+| Add a sub-issue (parent link) | `mcp__github__sub_issue_write` `method=add` | — |
+| Change ticket state | **No MCP tool** | ProjectV2 single-select mutations require GraphQL (see below). |
 
 `mcp__github__issue_write method=update` with `labels` replaces the full label set, so when you want to add or remove one specific label, read the current labels via `issue_read method=get_labels` first and pass the merged array. The poller's adapter uses targeted REST endpoints to avoid the round-trip; skills don't need to.
 
@@ -61,6 +61,15 @@ The Symphony adapter packs `<projectItemId>|<owner/repo>|<issueNumber>` as the o
 ProjectV2 has no MCP equivalent for setting a single-select field. Use the GitHub GraphQL API:
 
 ```bash
+# Sanity-check the board config before hitting GitHub. ProjectV2 numbering
+# starts at 1, so a placeholder `projectNumber: 0` in the board file is a
+# misconfiguration — bail out with a clear hint instead of letting GitHub
+# return an opaque "project not found" error.
+if [ "${GH_PROJECT_NUMBER:-0}" -le 0 ]; then
+  echo "[github-projects] Board config has githubProjects.projectNumber=$GH_PROJECT_NUMBER — set it to the real ProjectV2 number (>=1) before running." >&2
+  exit 1
+fi
+
 # Resolve the project ID and the status field's option IDs (cache per session).
 GH_TOKEN="$GITHUB_TOKEN"
 SCHEMA=$(curl -s -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/json" \

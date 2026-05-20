@@ -34,7 +34,7 @@ Pull these fields:
 | `ticketSystem` | `boards/<x>.json` | `"jira"` → Jira MCP; `"linear"` → Linear MCP; `"github-projects"` → GitHub MCP + ProjectV2 GraphQL |
 | `ticketPrefix` | `boards/<x>.json` | Jira `project_key` (uppercase); github-projects: shown in identifier (`SY-42`) |
 | `teamId` | `boards/<x>.json` (Linear) | Linear `teamId` |
-| `assigneeId` | `boards/<x>.json` → fallback `symphony.json` | who to assign to so the poller actually picks it up |
+| `assigneeId` | `boards/<x>.json` → fallback `symphony.json` | who to assign to so the poller actually picks it up. Format varies by backend: Linear UUID, Jira accountId, or GitHub username/login |
 | `assigneeEmail` | `boards/<x>.json` (Jira only) | the **email** to pass to `jira_update_issue` — see Step 4 |
 | `githubProjects.owner`, `githubProjects.projectNumber`, `githubProjects.repo`, `githubProjects.statusField` | `boards/<x>.json` (github-projects only) | project coordinates + status single-select field |
 | `states.backlog` | `boards/<x>.json` (Linear UUID) / `"Backlog"` (Jira name) / option name (github-projects, e.g. `"Backlog"`) | initial state — see Step 3 for why |
@@ -86,7 +86,7 @@ GitHub Issues don't carry the Symphony state on themselves — state lives in a 
 mcp__github__issue_write
   method = "create"
   owner  = "<githubProjects.owner>"
-  repo   = "<githubProjects.repo's name part, after the slash>"
+  repo   = "<repo name only — split githubProjects.repo on '/' and take the second segment>"
   title  = <user-provided title>
   body   = <markdown body>
   labels = ["project:symphony"]   # only if this is symphony work
@@ -109,7 +109,7 @@ mcp__github__issue_write
 #    for githubProjects.states.backlog ("Backlog") out of the schema fetch above.
 ```
 
-Only after Step 3 succeeds — verified by re-reading the item's `Status` field — call `mcp__github__issue_write method=update assignees=[<assigneeId from board config>]` to assign the issue. GitHub assignees are usernames (logins), not numeric IDs.
+Only after Step 3 succeeds — verified by re-reading the item's `Status` field — call `mcp__github__issue_write method=update assignees=[<assigneeId from board config>]` to assign the issue. For github-projects boards, `assigneeId` is the GitHub **username/login** (e.g. `"Stupidism"`), not a numeric ID — the GitHub API rejects numeric IDs for assignment.
 
 ### 4. ⚠️ Verify Backlog first, then assign
 
