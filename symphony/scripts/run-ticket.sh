@@ -264,15 +264,24 @@ esac
 # ── Spawn agent ────────────────────────────────────────────────────────────────
 
 if [ "$AGENT_RUNTIME" = "codex" ]; then
-  # codex shares session state with the codex desktop app natively, so it
-  # needs neither --remote-control / pty-wrapper nor --session-id / --resume
-  # plumbing. Each invocation is independent; stdio goes to the per-ticket log
-  # file inherited from the parent (poller).
+  # codex tracks sessions independently of claude — no --session-id / --resume
+  # plumbing on either branch. Each invocation is its own session.
   CODEX_BIN="${CODEX_BIN:-codex}"
   CODEX_FLAGS="${CODEX_FLAGS:---dangerously-bypass-approvals-and-sandbox}"
-  echo "[run] Runtime: codex (bin=$CODEX_BIN flags=$CODEX_FLAGS)"
-  # shellcheck disable=SC2086
-  "$CODEX_BIN" exec $CODEX_FLAGS "$PROMPT"
+  if [ "${REMOTE_CONTROL:-}" = "true" ]; then
+    # Use the interactive `codex` TUI (not `codex exec`) so the codex desktop
+    # app can attach and surface session details. Poller redirects stdio to a
+    # log file, so allocate a PTY for the TUI to render in.
+    echo "[run] Runtime: codex TUI via pty (bin=$CODEX_BIN flags=$CODEX_FLAGS)"
+    # shellcheck disable=SC2086
+    PROMPT_FILE="$(mktemp /tmp/symphony-codex-prompt-XXXXXX.txt)"
+    printf '%s' "$PROMPT" > "$PROMPT_FILE"
+    CODEX_BIN="$CODEX_BIN" python3 "$SYMPHONY_ROOT/scripts/codex-pty-wrapper.py" "$PROMPT_FILE" $CODEX_FLAGS
+  else
+    echo "[run] Runtime: codex exec (bin=$CODEX_BIN flags=$CODEX_FLAGS)"
+    # shellcheck disable=SC2086
+    "$CODEX_BIN" exec $CODEX_FLAGS "$PROMPT"
+  fi
   AGENT_EXIT=$?
 else
   SESSION_ID_FILE="${WORKTREE_PATH}/.claude-session-id"
