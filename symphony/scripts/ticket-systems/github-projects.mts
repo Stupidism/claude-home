@@ -133,7 +133,10 @@ const schemaCache = new Map<string, ProjectSchema>();
 
 async function getProjectSchema(board: BoardLike): Promise<ProjectSchema> {
   const cfg = ghOf(board);
-  const cacheKey = `${cfg.owner}#${cfg.projectNumber}`;
+  // Cache key must include the status-field name — two boards may target the
+  // same project with different `statusField` configs and need different
+  // field-ID/option-ID maps.
+  const cacheKey = `${cfg.owner}#${cfg.projectNumber}#${cfg.statusField ?? DEFAULT_STATUS_FIELD}`;
   const cached = schemaCache.get(cacheKey);
   if (cached) return cached;
 
@@ -323,7 +326,18 @@ export const githubProjectsAdapter: TicketSystemAdapter = {
       const issue = toIssue(board, item);
       if (!issue) continue;
       if (issue.state.name !== optionName) continue;
-      if (assigneeId && issue.assignee?.id !== assigneeId) continue;
+      // Only items whose backing Issue lives in the configured repo. ProjectV2
+      // can hold issues from multiple repos; without this check a sibling repo
+      // could surface tickets with identifiers that collide with our board's.
+      if (item.content?.repository.nameWithOwner !== cfg.repo) continue;
+      // Match the assignee filter against *all* GitHub assignees, not just
+      // the first one. GitHub issues support multiple assignees, and we'd
+      // silently skip a ticket where the configured user is not first.
+      if (assigneeId) {
+        const all = item.content?.assignees.nodes ?? [];
+        const match = all.some((a) => String(a.databaseId ?? a.login) === assigneeId || a.login === assigneeId);
+        if (!match) continue;
+      }
       out.push(issue);
     }
     return out;
@@ -332,11 +346,15 @@ export const githubProjectsAdapter: TicketSystemAdapter = {
   async fetchTicketByIdentifier(board, identifier) {
     const num = parseIdentifier(board, identifier);
     if (num === null) return null;
+    const cfg = ghOf(board);
     const items = await fetchAllItems(board);
     for (const item of items) {
-      if (item.content && item.content.number === num) {
-        return toIssue(board, item);
-      }
+      if (!item.content) continue;
+      if (item.content.number !== num) continue;
+      // Scope to the configured repo — ProjectV2 may hold issues from multiple
+      // repos and issue numbers are repo-local.
+      if (item.content.repository.nameWithOwner !== cfg.repo) continue;
+      return toIssue(board, item);
     }
     return null;
   },
