@@ -118,7 +118,11 @@ async function fetchOpenIssues(board: BoardConfig): Promise<LinearIssue[]> {
 
     all.push(...data.team.issues.nodes);
     if (!data.team.issues.pageInfo.hasNextPage) break;
-    after = data.team.issues.pageInfo.endCursor;
+    const nextAfter = data.team.issues.pageInfo.endCursor;
+    if (!nextAfter || nextAfter === after) {
+      throw new Error('Linear pagination cursor stalled (hasNextPage=true but endCursor missing/unchanged)');
+    }
+    after = nextAfter;
   }
 
   return all;
