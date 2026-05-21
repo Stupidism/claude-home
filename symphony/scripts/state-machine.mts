@@ -104,12 +104,20 @@ export interface Deps<Board extends BoardRef = BoardRef> {
   }>;
   postComment(board: Board, issueId: string, body: string): Promise<void>;
   /**
-   * Fire-and-forget AI review trigger for the PR at `prUrl`. Called from
-   * handleInProgress (UP-806) — when there is a PR but no
-   * `symphony/ai-reviewed` commit status on the current HEAD, the poller
-   * posts the trigger comment so Codex / CodeRabbit can review.
+   * Fire-and-forget AI review trigger for the PR at `prUrl`. Returns `true`
+   * iff the trigger was actually dispatched; returns `false` synchronously
+   * when the repo has AI review disabled (`codeReviewComment` empty in the
+   * resolved config).
    */
-  spawnAIReview(ticket: Issue, board: Board, prUrl: string): void;
+  spawnAIReview(ticket: Issue, board: Board, prUrl: string): boolean;
+  /**
+   * Sync probe: would `spawnAIReview` for this (ticket, board) actually
+   * dispatch? Used by `handleInProgress` to decide whether writing
+   * `symphony/ai-reviewed=pending` is safe — repos with AI review disabled
+   * would otherwise sit at `pending` forever with no review possible (Codex
+   * P1 on PR #68).
+   */
+  isAiReviewEnabled(ticket: Issue, board: Board): boolean;
   /**
    * Return the URL of the open PR for this ticket's synthesized branch, or
    * null when no PR exists yet. Used in In Progress so AI-review orchestration
@@ -347,12 +355,23 @@ async function ensureAiReviewForCurrentHead<B extends BoardRef>(
   let status: 'success' | 'pending' | 'error' | 'failure' | null = null;
   try { status = await deps.getAiReviewStatus(prUrl, sha); } catch { return; }
   if (status === null) {
+    // Repos with AI review disabled (`codeReviewComment` empty in resolved
+    // config) must NOT receive a `pending` marker — no review can ever
+    // arrive, and the In Progress → Human Review gate would never pass
+    // (Codex P1 on PR #68).
+    if (!deps.isAiReviewEnabled(ticket, board)) return;
+    // Write `pending` BEFORE dispatching the trigger. If the status write
+    // fails, we leave the status absent and skip the trigger — the next
+    // cycle retries cleanly. Dispatching first would risk duplicate review
+    // requests every cycle that the status API stays broken (Codex P1 on
+    // PR #68).
     try {
       await deps.postAiReviewStatus(prUrl, sha, 'pending', 'AI review requested');
-      deps.spawnAIReview(ticket, board, prUrl);
     } catch (err) {
-      deps.log(`AI review trigger failed for ${ticket.identifier}: ${err}`);
+      deps.log(`AI review pending status write failed for ${ticket.identifier}: ${err}`);
+      return;
     }
+    deps.spawnAIReview(ticket, board, prUrl);
     return;
   }
   if (status === 'pending') {

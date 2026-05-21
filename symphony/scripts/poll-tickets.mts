@@ -1757,8 +1757,13 @@ async function checkHumanReviewApproval(issue: Issue, board: BoardConfig) {
   // PR URL specifically from a Symphony-authored lock comment. Used as a
   // trusted reference for finalize-as-merged decisions so that an unrelated
   // PR URL pasted in human discussion can't trigger a premature Done move.
+  // Includes both APPROVAL_LOCK_PREFIX and FEEDBACK_REROUTE_LOCK_PREFIX so
+  // tickets that have been bounced back for feedback (but not yet approved)
+  // still have a trusted PR URL for the merged-fallback path (Codex P2 on
+  // PR #68 — removing the AI_REVIEW lock left lockedPrUrl null on most
+  // pre-approval tickets).
   const lockedPrUrl = bodies
-    .filter((b) => b.startsWith(APPROVAL_LOCK_PREFIX))
+    .filter((b) => b.startsWith(APPROVAL_LOCK_PREFIX) || b.startsWith(FEEDBACK_REROUTE_LOCK_PREFIX))
     .map((b) => b.match(prPattern)?.[0])
     .find(Boolean) ?? null;
   // Most recent `[symphony] feedbackReroute: <prUrl> at=<ISO>` timestamp. Used
@@ -1876,21 +1881,26 @@ function hasNewPRReviewSince(prUrl: string, since: Date | null): Promise<boolean
   });
 }
 
-function spawnAIReview(issue: Issue, board: BoardConfig, prUrl: string): void {
+function isAiReviewEnabled(issue: Issue, board: BoardConfig): boolean {
+  const repoConfig = resolveRepo(issue, board);
+  const projectConfig = resolveProject(issue, board) ?? undefined;
+  return Boolean(resolveGithub(symphonyConfig, board, projectConfig, repoConfig).codeReviewComment);
+}
+
+function spawnAIReview(issue: Issue, board: BoardConfig, prUrl: string): boolean {
   const prNumber = prUrl.match(/\/pull\/(\d+)/)?.[1];
-  if (!prNumber) return;
+  if (!prNumber) return false;
   const repoConfig = resolveRepo(issue, board);
   const projectConfig = resolveProject(issue, board) ?? undefined;
   // Resolved via global → board → project → repo deep-merge (UP-761). Repo-level
   // overrides win; an empty string at any level disables AI review.
   const codeReviewComment = resolveGithub(symphonyConfig, board, projectConfig, repoConfig).codeReviewComment;
-  if (!codeReviewComment) return; // no review configured for this repo/board — skip
+  if (!codeReviewComment) return false; // no review configured for this repo/board — skip
   const repoPath = repoConfig.path.replace(/^~/, process.env['HOME'] ?? '~');
 
   // Fire-and-forget the trigger comment. The AI reviewer leaves its feedback
-  // as a PR review; the next poll cycle detects it via hasNewPRReviewSince and
-  // reroutes the ticket back to In Progress, where the agent picks up the
-  // findings via pr-feedback-sweep.
+  // as a PR review; the next poll cycle detects it via hasReviewForSha and
+  // flips the symphony/ai-reviewed commit status from pending to success.
   const child = child_process.spawn(
     'gh',
     ['pr', 'comment', prNumber, '--body', codeReviewComment],
@@ -1903,6 +1913,7 @@ function spawnAIReview(issue: Issue, board: BoardConfig, prUrl: string): void {
   });
 
   log(chalk.blue(`[${timestamp()}] 🔍 AI review triggered for ${issue.identifier} (PR #${prNumber})`));
+  return true;
 }
 
 // ── AI review completion-marker helpers (UP-806) ──────────────────────────────
@@ -1999,8 +2010,8 @@ function getAiReviewStatus(prUrl: string, sha: string): Promise<'success' | 'pen
 
 function postAiReviewStatus(prUrl: string, sha: string, state: 'pending' | 'success', description: string): Promise<void> {
   const ref = parsePrRef(prUrl);
-  if (!ref) return Promise.resolve();
-  return new Promise<void>((resolve) => {
+  if (!ref) throw new Error(`postAiReviewStatus: cannot parse PR URL ${prUrl}`);
+  return new Promise<void>((resolve, reject) => {
     const child = child_process.spawn(
       'gh',
       [
@@ -2012,8 +2023,13 @@ function postAiReviewStatus(prUrl: string, sha: string, state: 'pending' | 'succ
       ],
       { stdio: ['ignore', 'pipe', 'pipe'] },
     );
-    child.on('error', () => resolve());
-    child.on('exit', () => resolve());
+    let stderr = '';
+    child.stderr?.on('data', (d: Buffer) => (stderr += d.toString()));
+    child.on('error', reject);
+    child.on('exit', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`gh api statuses exited ${code}: ${stderr.trim()}`));
+    });
   });
 }
 
@@ -2276,6 +2292,7 @@ async function poll(): Promise<void> {
       checkHumanReviewApproval,
       postComment,
       spawnAIReview,
+      isAiReviewEnabled,
       getOpenPRUrl,
       getPRHeadSha,
       getAiReviewStatus,
@@ -2405,7 +2422,7 @@ async function poll(): Promise<void> {
       moveToInProgress, moveToHumanReview, moveToMerging, moveToTodo, moveToDone,
       spawnAgent, resetReworkTicket, removeWorktree, cleanupCancelledTicket,
       areAllPRsMerged, isPRUrlMerged,
-      checkHumanReviewApproval, postComment, spawnAIReview,
+      checkHumanReviewApproval, postComment, spawnAIReview, isAiReviewEnabled,
       getOpenPRUrl, getPRHeadSha, getAiReviewStatus, postAiReviewStatus, hasReviewForSha,
       hasNewPRReviewSince, spawnNotifyReview, addLabel,
       isAgentRunning: (id) => runningAgents.has(id),

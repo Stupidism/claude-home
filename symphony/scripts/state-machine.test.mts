@@ -91,7 +91,11 @@ function makeDeps(overrides: Partial<Deps<BoardRef>> = {}): { deps: Deps<BoardRe
     isPRUrlMerged: () => false,
     checkHumanReviewApproval: async () => ({ alreadyHandled: false, approved: false, prUrl: null, lockedPrUrl: null, lastFeedbackRerouteAt: null }),
     postComment: recordAsync('postComment', undefined),
-    spawnAIReview: record('spawnAIReview'),
+    spawnAIReview: ((ticket: Issue, board: BoardRef, prUrl: string) => {
+      calls.push({ fn: 'spawnAIReview', args: [ticket, board, prUrl] });
+      return true;
+    }) as Deps<BoardRef>['spawnAIReview'],
+    isAiReviewEnabled: () => true,
     getOpenPRUrl: async () => null,
     getPRHeadSha: async () => null,
     getAiReviewStatus: async () => null,
@@ -430,23 +434,60 @@ for (const board of boards) {
     assert.ok(!fnNames(calls).some((n) => n === 'postComment'), 'handleHumanReview must not post the request-lock comment');
   });
 
-  test(`[${board.name}] inProgress with PR + no AI-review status → posts pending + spawns AI review`, async () => {
+  test(`[${board.name}] inProgress with PR + no AI-review status → writes pending FIRST, then spawns AI review`, async () => {
     const ticket = stubTicket(board.ticketPrefix, 208, 'inProgress', board);
-    const postStatusArgs: Array<[string, string, string, string]> = [];
-    const { deps, calls } = makeDeps({
+    const order: string[] = [];
+    const { deps } = makeDeps({
       // Suppress the agent-spawn side of handleInProgress so we isolate the
       // AI-review orchestration.
       isAgentRunning: () => true,
       getOpenPRUrl: async () => 'https://github.com/x/y/pull/208',
       getPRHeadSha: async () => 'sha208',
       getAiReviewStatus: async () => null,
-      postAiReviewStatus: async (...args) => {
-        postStatusArgs.push(args as [string, string, string, string]);
-      },
+      postAiReviewStatus: async (_url, _sha, state) => { order.push(`postAiReviewStatus:${state}`); },
+      spawnAIReview: () => { order.push('spawnAIReview'); return true; },
     });
     await processTicket('inProgress', ticket, board, deps);
-    assert.deepEqual(postStatusArgs, [['https://github.com/x/y/pull/208', 'sha208', 'pending', 'AI review requested']]);
-    assert.ok(fnNames(calls).includes('spawnAIReview'), 'spawnAIReview must be called');
+    // Order matters (Codex P1 on PR #68): pending must be written before the
+    // trigger fires so a failed status write doesn't produce duplicate
+    // review requests on every cycle.
+    assert.deepEqual(order, ['postAiReviewStatus:pending', 'spawnAIReview']);
+  });
+
+  test(`[${board.name}] inProgress with PR + no status + AI review disabled → no pending write, no spawn`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 215, 'inProgress', board);
+    const order: string[] = [];
+    const { deps } = makeDeps({
+      isAgentRunning: () => true,
+      getOpenPRUrl: async () => 'https://github.com/x/y/pull/215',
+      getPRHeadSha: async () => 'sha215',
+      getAiReviewStatus: async () => null,
+      isAiReviewEnabled: () => false,
+      postAiReviewStatus: async (_url, _sha, state) => { order.push(`postAiReviewStatus:${state}`); },
+      spawnAIReview: () => { order.push('spawnAIReview'); return true; },
+    });
+    await processTicket('inProgress', ticket, board, deps);
+    // When AI review is disabled, the orchestration must NOT write `pending`
+    // — otherwise the status stays pending forever (no review will arrive)
+    // and the In Progress → Human Review gate never passes (Codex P1).
+    assert.deepEqual(order, []);
+  });
+
+  test(`[${board.name}] inProgress with PR + failed pending write → no spawn (avoids duplicate triggers)`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 216, 'inProgress', board);
+    const order: string[] = [];
+    const { deps } = makeDeps({
+      isAgentRunning: () => true,
+      getOpenPRUrl: async () => 'https://github.com/x/y/pull/216',
+      getPRHeadSha: async () => 'sha216',
+      getAiReviewStatus: async () => null,
+      postAiReviewStatus: async () => { order.push('postAiReviewStatus:throw'); throw new Error('403'); },
+      spawnAIReview: () => { order.push('spawnAIReview'); return true; },
+    });
+    await processTicket('inProgress', ticket, board, deps);
+    // pending write failed → trigger MUST NOT fire (Codex P1 on PR #68).
+    // Next cycle will retry from scratch (status still absent).
+    assert.deepEqual(order, ['postAiReviewStatus:throw']);
   });
 
   test(`[${board.name}] inProgress with PR + pending status + review for current HEAD → flips to success`, async () => {
