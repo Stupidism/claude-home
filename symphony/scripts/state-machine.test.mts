@@ -98,6 +98,7 @@ function makeDeps(overrides: Partial<Deps<BoardRef>> = {}): { deps: Deps<BoardRe
     isAgentRunning: () => false,
     agentSlotsAvailable: () => 5,
     failureCountFor: () => 0,
+    resetFailureCount: record('resetFailureCount'),
     worktreeOccupiedBy: () => null,
     isEligible: () => true,
     log: () => {},
@@ -212,6 +213,62 @@ for (const board of boards) {
     const effect = await processTicket('inProgress', ticket, board, deps);
     assert.deepEqual(effect, { kind: 'noop', reason: 'max retries exhausted' });
     assert.deepEqual(calls, []);
+  });
+
+  // UP-781: a ticket that exhausted MAX_RETRIES on a previous round must get a
+  // fresh budget when a human bounces it back through review → In Progress.
+  // The dispatcher fires `resetFailureCount` on the review→inProgress edge so
+  // the retry guard no longer trips.
+  test(`[${board.name}] inProgress with prevState='rework' resets failureCount → spawnAgent fires even past MAX_RETRIES`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 130, 'inProgress', board);
+    let count = 99;
+    const { deps, calls } = makeDeps({
+      failureCountFor: () => count,
+      resetFailureCount: (_id: string) => { count = 0; },
+    });
+    const effect = await processTicket('inProgress', ticket, board, deps, 'rework');
+    assert.deepEqual(effect, { kind: 'resumeAgent', mode: 'feedback' });
+    assert.ok(fnNames(calls).includes('spawnAgent'), 'spawnAgent must be invoked despite prior failures');
+    assert.equal(count, 0, 'failureCount must be reset to 0');
+  });
+
+  test(`[${board.name}] inProgress with prevState='humanReview' also resets failureCount`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 131, 'inProgress', board);
+    let count = 99;
+    const { deps, calls } = makeDeps({
+      failureCountFor: () => count,
+      resetFailureCount: (_id: string) => { count = 0; },
+    });
+    const effect = await processTicket('inProgress', ticket, board, deps, 'humanReview');
+    assert.deepEqual(effect, { kind: 'resumeAgent', mode: 'feedback' });
+    assert.ok(fnNames(calls).includes('spawnAgent'));
+    assert.equal(count, 0);
+  });
+
+  test(`[${board.name}] inProgress with prevState='todo' does NOT reset (first-entry edge)`, async () => {
+    // The reset is gated on the review-return edge: a ticket entering
+    // In Progress for the first time (todo→inProgress) must keep its counter.
+    const ticket = stubTicket(board.ticketPrefix, 132, 'inProgress', board);
+    let count = 99;
+    const { deps } = makeDeps({
+      failureCountFor: () => count,
+      resetFailureCount: (_id: string) => { count = 0; },
+    });
+    const effect = await processTicket('inProgress', ticket, board, deps, 'todo');
+    assert.deepEqual(effect, { kind: 'noop', reason: 'max retries exhausted' });
+    assert.equal(count, 99, 'counter untouched on non-review edge');
+  });
+
+  test(`[${board.name}] inProgress with prevState='inProgress' does NOT reset (re-observation)`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 133, 'inProgress', board);
+    let count = 99;
+    const { deps } = makeDeps({
+      failureCountFor: () => count,
+      resetFailureCount: (_id: string) => { count = 0; },
+    });
+    const effect = await processTicket('inProgress', ticket, board, deps, 'inProgress');
+    assert.deepEqual(effect, { kind: 'noop', reason: 'max retries exhausted' });
+    assert.equal(count, 99);
   });
 
   test(`[${board.name}] humanReview when PR already merged → removes worktree + moves to Done`, async () => {

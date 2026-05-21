@@ -2148,6 +2148,7 @@ async function poll(): Promise<void> {
       isAgentRunning: (id) => runningAgents.has(id),
       agentSlotsAvailable: () => Math.max(0, MAX_CONCURRENT - runningAgents.size),
       failureCountFor: (id) => failureCounts.get(id) ?? 0,
+      resetFailureCount: (id) => { failureCounts.set(id, 0); },
       worktreeOccupiedBy,
       isEligible,
       log,
@@ -2269,6 +2270,7 @@ async function poll(): Promise<void> {
       isAgentRunning: (id) => runningAgents.has(id),
       agentSlotsAvailable: () => Math.max(0, MAX_CONCURRENT - runningAgents.size),
       failureCountFor: (id) => failureCounts.get(id) ?? 0,
+      resetFailureCount: (id) => { failureCounts.set(id, 0); },
       worktreeOccupiedBy,
       isEligible, log,
     };
