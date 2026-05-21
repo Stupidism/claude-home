@@ -121,6 +121,14 @@ export interface Deps<Board extends BoardRef = BoardRef> {
   agentSlotsAvailable(): number;
   failureCountFor(identifier: string): number;
   /**
+   * Reset the retry counter for `identifier` to zero. The dispatcher fires
+   * this on the review→inProgress entry edge (UP-781) so a ticket that
+   * exhausted MAX_RETRIES on a previous round gets a fresh budget when a
+   * human bounces it back from Human Review / Rework. Wired in the poller
+   * via `failureCounts.set(id, 0)`; individual handlers never call it.
+   */
+  resetFailureCount(identifier: string): void;
+  /**
    * If another running agent (i.e. for a different ticket identifier) already
    * occupies the worktree this ticket would spawn into, return the conflicting
    * identifier. Otherwise return null. Used to prevent two agents from
@@ -493,6 +501,16 @@ export async function processTicket<B extends BoardRef>(
   deps: Deps<B>,
   prevState: StateKey | null = null,
 ): Promise<Effect> {
+  // UP-781: clear the per-identifier retry counter on the review→inProgress
+  // entry edge. Without this, a ticket that hit MAX_RETRIES once would stay
+  // wedged forever — the human bouncing it from Human Review / Rework back
+  // through Todo into In Progress should buy a fresh budget. Done here in
+  // the dispatcher (not in `handleInProgress`) so handlers stay pure and the
+  // reset is explicit on every observed edge. Idempotent: setting an already-
+  // zero counter to zero is a no-op.
+  if (state === 'inProgress' && (prevState === 'humanReview' || prevState === 'rework')) {
+    deps.resetFailureCount(ticket.identifier);
+  }
   const args = { ticket, board, deps, prevState };
   switch (state) {
     case 'todo':         return handleTodo(args);
