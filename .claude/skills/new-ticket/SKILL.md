@@ -1,6 +1,6 @@
 ---
 name: new-ticket
-description: Create a new Symphony-trackable ticket on the right board (UP=Jira, WOR=Linear, etc.), with assignee, labels, type, and state pre-filled from board config. Use when the user says "建 ticket", "create a ticket", "新开一个 ticket", "open an issue", or similar — for new work, not for editing existing tickets.
+description: Create a new Symphony-trackable ticket on the right board (SY=GitHub Projects, UP=Jira, WOR=Linear read-only), with assignee, labels, type, and state pre-filled from board config. Use when the user says "建 ticket", "create a ticket", "新开一个 ticket", "open an issue", or similar — for new work, not for editing existing tickets.
 ---
 
 # new-ticket
@@ -16,15 +16,18 @@ A new ticket only ends up in Symphony's polling queue if it has the right **assi
 
 ### 1. Decide the board
 
-- If the user names a board (`UP`, `WOR`, …), use it.
-- Otherwise infer from the work: anything touching the `symphony` repo → ask. Don't guess silently.
+- If the user names a board (`UP`, `SY`, `WOR`, …), use it.
+- Otherwise infer from the work:
+  - **Symphony / `claude-home` automation work → `SY` (github-projects).** This is the default board for new Symphony tickets as of the UP-795 cutover. Do **not** create new tickets on `WOR` for Symphony work — WOR is now read-only history (see `symphony/scripts/list-open-wor-tickets.mts` for the in-flight WOR backlog).
+  - Anything else (product work, monorepo features, bugs) → ask. Don't guess silently.
 
 ### 2. Read board config
 
 ```bash
 # Board file lives at ~/symphony/config/boards/<lowercase>.json
-cat ~/symphony/config/boards/up.json
-cat ~/symphony/config/symphony.json   # for global assigneeId fallback
+cat ~/symphony/config/boards/sy.json   # default for Symphony work (github-projects)
+cat ~/symphony/config/boards/up.json   # product tickets (Jira)
+cat ~/symphony/config/symphony.json    # for global assigneeId fallback
 ```
 
 Pull these fields:
