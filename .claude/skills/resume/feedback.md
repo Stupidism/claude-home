@@ -76,9 +76,32 @@ fi
 
 ## 3. Act
 
+First, decide whether there is any actionable feedback at all:
+
+- New ticket comments from the developer (ignore `[symphony]` bot comments)
+- Unresolved PR review comments or inline code comments
+- Failing CI checks
+
+### 3a. Actionable feedback exists
+
 - Address every instruction in ticket comments (from the developer, not from `[symphony]` bot comments)
 - Address every unresolved PR comment and inline code comment
 - Fix every failing CI check
 - Do not re-implement work that is already done — only fix what is asked for
 
 After addressing all feedback, re-validate (read `$SKILLS_ROOT/validate/SKILL.md`) and submit for review (read `$SKILLS_ROOT/submit-for-review/SKILL.md`).
+
+### 3b. No actionable feedback (PR already merged / nothing left to address)
+
+This happens when the ticket was bounced back to `In Progress` but the underlying work is already done — typically because the user merged the PR directly on GitHub, or all review threads were resolved in an earlier cycle.
+
+Before declaring "no actionable feedback", verify **all** of the following:
+
+- No new developer instructions in ticket comments.
+- No unresolved PR review comments or inline code comments (human or bot).
+- CI is green.
+- **The AI code review cycle has completed for the current PR head.** Check the GitHub commit status `symphony/ai-reviewed` on the current PR HEAD (`gh api repos/<owner>/<repo>/commits/<sha>/statuses --jq '.[] | select(.context=="symphony/ai-reviewed")'`). The poller sets it to `pending` when it fires the AI review trigger from `handleInProgress` and flips it to `success` once a review whose `commit_id` matches that SHA has landed (UP-806). If the status is missing or `pending`, the review is not complete — wait, do not skip to 3b. If the AI review left findings, treat them as actionable feedback and handle them in 3a first.
+
+If — and only if — all of the above hold, do **not** silently exit. The poller will keep respawning a fresh agent on every cycle.
+
+Push the ticket back to `Human Review` by running `$SKILLS_ROOT/submit-for-review/SKILL.md`. The `handleHumanReview` PR-merged / approval fast-path in `symphony/scripts/state-machine.mts` will then finalize the ticket automatically.

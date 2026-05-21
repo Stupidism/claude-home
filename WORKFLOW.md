@@ -35,7 +35,7 @@
 | -------------- | --------------------------------------------------------------------------------- |
 | `Backlog`      | **停止。不得操作。**                                                               |
 | `Todo`         | 读取 `$SKILLS_ROOT/read-and-plan/SKILL.md` → `setup-worktree` → 开始工作          |
-| `In Progress`  | 从 workpad 恢复                                                                    |
+| `In Progress`  | 从 workpad 恢复。只有当 ① 无新开发者指令 ② 无未解决 PR 评论 ③ CI 绿 ④ **AI code review 对当前 PR head 已完成**（PR HEAD 的 `symphony/ai-reviewed` commit status 为 `success`，由 poller 在 `handleInProgress` 中触发并在收到匹配 `commit_id` 的 review 后翻转，UP-806）且无遗留发现 — 才算"没有可执行的工作"，此时必须调用 `submit-for-review` 把工单推回 `Human Review`，不得静默退出。若该 commit status 缺失或为 `pending`，等待；若 AI 评审有发现，按反馈处理而非直接退出。 |
 | `Human Review` | 等待。不得写代码。可选：加 `symphony:needs-notify-review` 标签让 poller ping 团队。   |
 | `Rework`       | 读取 `$SKILLS_ROOT/rework/SKILL.md`                                               |
 | `Merging`      | 通过 Skill 工具调用 `land` skill。不得移动到 Done — poller 在你退出后完成该操作     |

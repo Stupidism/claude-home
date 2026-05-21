@@ -89,9 +89,14 @@ function makeDeps(overrides: Partial<Deps<BoardRef>> = {}): { deps: Deps<BoardRe
     cleanupCancelledTicket: recordAsync('cleanupCancelledTicket', undefined),
     areAllPRsMerged: () => false,
     isPRUrlMerged: () => false,
-    checkHumanReviewApproval: async () => ({ alreadyHandled: false, aiReviewed: false, approved: false, prUrl: null, lockedPrUrl: null, lastFeedbackRerouteAt: null }),
+    checkHumanReviewApproval: async () => ({ alreadyHandled: false, approved: false, prUrl: null, lockedPrUrl: null, lastFeedbackRerouteAt: null }),
     postComment: recordAsync('postComment', undefined),
     spawnAIReview: record('spawnAIReview'),
+    getOpenPRUrl: async () => null,
+    getPRHeadSha: async () => null,
+    getAiReviewStatus: async () => null,
+    postAiReviewStatus: recordAsync('postAiReviewStatus', undefined),
+    hasReviewForSha: async () => false,
     hasNewPRReviewSince: async () => false,
     spawnNotifyReview: (async () => null) as Deps<BoardRef>['spawnNotifyReview'],
     addLabel: recordAsync('addLabel', undefined),
@@ -286,7 +291,6 @@ for (const board of boards) {
       isPRUrlMerged: (url) => url === 'https://github.com/x/y/pull/999',
       checkHumanReviewApproval: async () => ({
         alreadyHandled: false,
-        aiReviewed: true,
         approved: false,
         prUrl: 'https://github.com/x/y/pull/999',
         lockedPrUrl: 'https://github.com/x/y/pull/999',
@@ -306,7 +310,6 @@ for (const board of boards) {
       isPRUrlMerged: (url) => { isPRUrlMergedCalls.push(url); return true; },
       checkHumanReviewApproval: async () => ({
         alreadyHandled: false,
-        aiReviewed: false,
         approved: false,
         prUrl: 'https://github.com/x/y/pull/777',
         lockedPrUrl: null,
@@ -334,7 +337,6 @@ for (const board of boards) {
     const { deps, calls } = makeDeps({
       checkHumanReviewApproval: async () => ({
         alreadyHandled: false,
-        aiReviewed: true,
         approved: true,
         prUrl: 'https://github.com/x/y/pull/1',
         lockedPrUrl: 'https://github.com/x/y/pull/1',
@@ -353,7 +355,6 @@ for (const board of boards) {
     const { deps, calls } = makeDeps({
       checkHumanReviewApproval: async () => ({
         alreadyHandled: true, // skip AI-review path so we isolate notify gating
-        aiReviewed: true,
         approved: false,
         prUrl: 'https://github.com/x/y/pull/3',
         lockedPrUrl: 'https://github.com/x/y/pull/3',
@@ -374,7 +375,6 @@ for (const board of boards) {
     const { deps, calls } = makeDeps({
       checkHumanReviewApproval: async () => ({
         alreadyHandled: true,
-        aiReviewed: true,
         approved: false,
         prUrl: 'https://github.com/x/y/pull/4',
         lockedPrUrl: 'https://github.com/x/y/pull/4',
@@ -397,7 +397,6 @@ for (const board of boards) {
     const { deps, calls } = makeDeps({
       checkHumanReviewApproval: async () => ({
         alreadyHandled: true,
-        aiReviewed: true,
         approved: false,
         prUrl: 'https://github.com/x/y/pull/5',
         lockedPrUrl: 'https://github.com/x/y/pull/5',
@@ -411,12 +410,14 @@ for (const board of boards) {
     assert.ok(!fnNames(calls).includes('addLabel'));
   });
 
-  test(`[${board.name}] humanReview without AI review yet → posts AI-review lock + spawns review`, async () => {
+  // UP-806: AI review now fires inside In Progress, not Human Review. The
+  // handleHumanReview branch that posted `[symphony] aiReviewRequested:` and
+  // spawned the AI reviewer has been removed.
+  test(`[${board.name}] humanReview no longer spawns AI review (UP-806 — moved to In Progress)`, async () => {
     const ticket = stubTicket(board.ticketPrefix, 108, 'humanReview', board);
     const { deps, calls } = makeDeps({
       checkHumanReviewApproval: async () => ({
         alreadyHandled: false,
-        aiReviewed: false,
         approved: false,
         prUrl: 'https://github.com/x/y/pull/2',
         lockedPrUrl: null,
@@ -424,8 +425,90 @@ for (const board of boards) {
       }),
     });
     const effect = await processTicket('humanReview', ticket, board, deps);
-    assert.deepEqual(effect, { kind: 'humanReviewTriggerAI' });
-    assert.deepEqual(fnNames(calls), ['postComment', 'spawnAIReview']);
+    assert.deepEqual(effect, { kind: 'humanReviewWaitForApproval' });
+    assert.ok(!fnNames(calls).includes('spawnAIReview'), 'handleHumanReview must not spawn AI review');
+    assert.ok(!fnNames(calls).some((n) => n === 'postComment'), 'handleHumanReview must not post the request-lock comment');
+  });
+
+  test(`[${board.name}] inProgress with PR + no AI-review status → posts pending + spawns AI review`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 208, 'inProgress', board);
+    const postStatusArgs: Array<[string, string, string, string]> = [];
+    const { deps, calls } = makeDeps({
+      // Suppress the agent-spawn side of handleInProgress so we isolate the
+      // AI-review orchestration.
+      isAgentRunning: () => true,
+      getOpenPRUrl: async () => 'https://github.com/x/y/pull/208',
+      getPRHeadSha: async () => 'sha208',
+      getAiReviewStatus: async () => null,
+      postAiReviewStatus: async (...args) => {
+        postStatusArgs.push(args as [string, string, string, string]);
+      },
+    });
+    await processTicket('inProgress', ticket, board, deps);
+    assert.deepEqual(postStatusArgs, [['https://github.com/x/y/pull/208', 'sha208', 'pending', 'AI review requested']]);
+    assert.ok(fnNames(calls).includes('spawnAIReview'), 'spawnAIReview must be called');
+  });
+
+  test(`[${board.name}] inProgress with PR + pending status + review for current HEAD → flips to success`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 209, 'inProgress', board);
+    const postStatusArgs: Array<[string, string, string, string]> = [];
+    const { deps, calls } = makeDeps({
+      isAgentRunning: () => true,
+      getOpenPRUrl: async () => 'https://github.com/x/y/pull/209',
+      getPRHeadSha: async () => 'sha209',
+      getAiReviewStatus: async () => 'pending',
+      hasReviewForSha: async () => true,
+      postAiReviewStatus: async (...args) => {
+        postStatusArgs.push(args as [string, string, string, string]);
+      },
+    });
+    await processTicket('inProgress', ticket, board, deps);
+    assert.deepEqual(postStatusArgs, [['https://github.com/x/y/pull/209', 'sha209', 'success', 'AI reviewer responded']]);
+    assert.ok(!fnNames(calls).includes('spawnAIReview'), 'must not re-spawn AI review when status already pending');
+  });
+
+  test(`[${board.name}] inProgress with PR + pending status + no review yet → no-op on the status flip`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 210, 'inProgress', board);
+    const postStatusArgs: unknown[][] = [];
+    const { deps, calls } = makeDeps({
+      isAgentRunning: () => true,
+      getOpenPRUrl: async () => 'https://github.com/x/y/pull/210',
+      getPRHeadSha: async () => 'sha210',
+      getAiReviewStatus: async () => 'pending',
+      hasReviewForSha: async () => false,
+      postAiReviewStatus: async (...args) => { postStatusArgs.push(args); },
+    });
+    await processTicket('inProgress', ticket, board, deps);
+    assert.deepEqual(postStatusArgs, [], 'must not flip status without a matching review');
+    assert.ok(!fnNames(calls).includes('spawnAIReview'));
+  });
+
+  test(`[${board.name}] inProgress with PR + success status → no AI-review side-effect`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 211, 'inProgress', board);
+    const postStatusArgs: unknown[][] = [];
+    const { deps, calls } = makeDeps({
+      isAgentRunning: () => true,
+      getOpenPRUrl: async () => 'https://github.com/x/y/pull/211',
+      getPRHeadSha: async () => 'sha211',
+      getAiReviewStatus: async () => 'success',
+      postAiReviewStatus: async (...args) => { postStatusArgs.push(args); },
+    });
+    await processTicket('inProgress', ticket, board, deps);
+    assert.deepEqual(postStatusArgs, []);
+    assert.ok(!fnNames(calls).includes('spawnAIReview'));
+  });
+
+  test(`[${board.name}] inProgress with no PR → AI orchestration is a no-op`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 212, 'inProgress', board);
+    const postStatusArgs: unknown[][] = [];
+    const { deps, calls } = makeDeps({
+      isAgentRunning: () => true,
+      getOpenPRUrl: async () => null,
+      postAiReviewStatus: async (...args) => { postStatusArgs.push(args); },
+    });
+    await processTicket('inProgress', ticket, board, deps);
+    assert.deepEqual(postStatusArgs, []);
+    assert.ok(!fnNames(calls).includes('spawnAIReview'));
   });
 
   test(`[${board.name}] humanReview after AI fired with no new PR review yet → waits (no reroute)`, async () => {
@@ -433,7 +516,6 @@ for (const board of boards) {
     const { deps, calls } = makeDeps({
       checkHumanReviewApproval: async () => ({
         alreadyHandled: false,
-        aiReviewed: true,
         approved: false,
         prUrl: 'https://github.com/x/y/pull/140',
         lockedPrUrl: 'https://github.com/x/y/pull/140',
@@ -451,7 +533,6 @@ for (const board of boards) {
     const { deps, calls } = makeDeps({
       checkHumanReviewApproval: async () => ({
         alreadyHandled: false,
-        aiReviewed: true,
         approved: false,
         prUrl: 'https://github.com/x/y/pull/141',
         lockedPrUrl: 'https://github.com/x/y/pull/141',
@@ -473,7 +554,6 @@ for (const board of boards) {
     const { deps, calls } = makeDeps({
       checkHumanReviewApproval: async () => ({
         alreadyHandled: false,
-        aiReviewed: true,
         approved: true,
         prUrl: 'https://github.com/x/y/pull/142',
         lockedPrUrl: 'https://github.com/x/y/pull/142',
@@ -496,7 +576,6 @@ for (const board of boards) {
     const { deps } = makeDeps({
       checkHumanReviewApproval: async () => ({
         alreadyHandled: false,
-        aiReviewed: true,
         approved: false,
         prUrl: 'https://github.com/x/y/pull/143',
         lockedPrUrl: 'https://github.com/x/y/pull/143',
@@ -672,7 +751,6 @@ for (const board of boards) {
       const { deps } = makeDeps({
         checkHumanReviewApproval: async () => ({
           alreadyHandled: false,
-          aiReviewed: true,
           approved: true,
           prUrl: 'https://github.com/x/y/pull/999',
           lockedPrUrl: 'https://github.com/x/y/pull/999',
