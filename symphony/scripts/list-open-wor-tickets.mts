@@ -81,24 +81,47 @@ async function fetchOpenIssues(board: BoardConfig): Promise<LinearIssue[]> {
     .map((k) => board.linear!.states[k])
     .filter((id): id is string => Boolean(id));
 
-  const data = await linearQuery<{ team: { issues: { nodes: LinearIssue[] } } }>(
-    `query OpenWorIssues($teamId: String!, $stateIds: [ID!]!) {
-      team(id: $teamId) {
-        issues(filter: { state: { id: { in: $stateIds } } }, orderBy: updatedAt, first: 250) {
-          nodes {
-            identifier
-            title
-            url
-            updatedAt
-            state { id name }
-            assignee { name }
+  const all: LinearIssue[] = [];
+  let after: string | null = null;
+
+  while (true) {
+    const data = await linearQuery<{
+      team: {
+        issues: {
+          nodes: LinearIssue[];
+          pageInfo: { hasNextPage: boolean; endCursor: string | null };
+        };
+      };
+    }>(
+      `query OpenWorIssues($teamId: String!, $stateIds: [ID!]!, $after: String) {
+        team(id: $teamId) {
+          issues(
+            filter: { state: { id: { in: $stateIds } } }
+            orderBy: updatedAt
+            first: 250
+            after: $after
+          ) {
+            nodes {
+              identifier
+              title
+              url
+              updatedAt
+              state { id name }
+              assignee { name }
+            }
+            pageInfo { hasNextPage endCursor }
           }
         }
-      }
-    }`,
-    { teamId: board.teamId, stateIds }
-  );
-  return data.team.issues.nodes;
+      }`,
+      { teamId: board.teamId, stateIds, after }
+    );
+
+    all.push(...data.team.issues.nodes);
+    if (!data.team.issues.pageInfo.hasNextPage) break;
+    after = data.team.issues.pageInfo.endCursor;
+  }
+
+  return all;
 }
 
 function groupByState(issues: LinearIssue[]): Map<string, LinearIssue[]> {
