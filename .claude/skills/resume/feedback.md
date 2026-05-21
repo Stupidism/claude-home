@@ -76,9 +76,25 @@ fi
 
 ## 3. Act
 
+First, decide whether there is any actionable feedback at all:
+
+- New ticket comments from the developer (ignore `[symphony]` bot comments)
+- Unresolved PR review comments or inline code comments
+- Failing CI checks
+
+### 3a. Actionable feedback exists
+
 - Address every instruction in ticket comments (from the developer, not from `[symphony]` bot comments)
 - Address every unresolved PR comment and inline code comment
 - Fix every failing CI check
 - Do not re-implement work that is already done — only fix what is asked for
 
 After addressing all feedback, re-validate (read `$SKILLS_ROOT/validate/SKILL.md`) and submit for review (read `$SKILLS_ROOT/submit-for-review/SKILL.md`).
+
+### 3b. No actionable feedback (PR already merged / nothing left to address)
+
+This happens when the ticket was bounced back to `In Progress` but the underlying work is already done — typically because the user merged the PR directly on GitHub, or all review threads were resolved in an earlier cycle.
+
+Do **not** silently exit — the poller will keep respawning a fresh agent on every cycle.
+
+Instead, push the ticket back to `Human Review` by running `$SKILLS_ROOT/submit-for-review/SKILL.md`. The `handleHumanReview` PR-merged fast-path in `symphony/scripts/state-machine.mts` will then finalize the ticket to `Done` automatically.

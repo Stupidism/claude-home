@@ -46,3 +46,15 @@ If there are new comments with instructions (ignore `[symphony]` bot workpad com
 - Update the workpad with what was found and resolved
 
 **Then continue where you left off.**
+
+## No actionable work
+
+If, after sweeping the ticket and the PR, there is nothing left to do — for example:
+
+- The PR was merged externally (e.g. the user merged it directly on GitHub) and there are no follow-up comments to address.
+- All ticket comments and PR review comments have already been resolved in earlier cycles.
+- CI is green and there is no new feedback since the last review submission.
+
+…do **not** silently exit. The poller will respawn you on every cycle if the ticket stays in `In Progress`, burning tokens for no progress.
+
+Instead, push the ticket back to `Human Review` by running `$SKILLS_ROOT/submit-for-review/SKILL.md`. The `handleHumanReview` PR-merged fast-path (see `symphony/scripts/state-machine.mts`) will then finalize the ticket to `Done` without further agent work.
