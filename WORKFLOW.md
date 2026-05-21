@@ -19,7 +19,9 @@
 > - **$WORK_PREFERRED_LANGUAGE**：一切进入仓库或工单系统的内容 — 代码注释、commit 消息、PR 标题/正文、工单评论、workpad 条目。
 > - 任何情况下都不得使用 $NEVER_USE_LANGUAGE。
 >
-> **工单系统：** 通过 `$SKILLS_ROOT/ticket/SKILL.md` 调度器路由 — Linear (`WOR-*`) 走 `linear/SKILL.md`、Jira (`UP-*`) 走 `jira/SKILL.md`。两边都优先使用对应的 MCP 工具（`mcp__linear-server__*` 或 `mcp__mcp-atlassian__jira_*`），仅当 MCP 工具在当前会话不可用时才回退到 curl。**如果获取工单失败，立即停止并报告错误 — 不得根据标题或代码库猜测需求。**
+> **工单系统：** 通过 `$SKILLS_ROOT/ticket/SKILL.md` 调度器路由 — GitHub Projects (`SY-*`) 走 `github-projects/SKILL.md`、Linear (`WOR-*`) 走 `linear/SKILL.md`、Jira (`UP-*`) 走 `jira/SKILL.md`。优先使用对应的 MCP 工具（`mcp__github__*` + ProjectV2 GraphQL、`mcp__linear-server__*`、`mcp__mcp-atlassian__jira_*`），仅当 MCP 工具在当前会话不可用时才回退到 curl。**如果获取工单失败，立即停止并报告错误 — 不得根据标题或代码库猜测需求。**
+>
+> **默认看板：** 新的 Symphony 自动化工单默认进 `SY` (GitHub Projects)。`WOR` 自 UP-795 后只读，不再创建新工单 — 仍在途的 WOR 工单见 `~/symphony/scripts/list-open-wor-tickets.mts`。
 >
 > **自治模式：** 永远不要让人类跟进。使用 `$SKILLS_ROOT/commit/SKILL.md` 和 `$SKILLS_ROOT/create-pr/SKILL.md`。
 >

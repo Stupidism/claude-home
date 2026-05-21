@@ -1,6 +1,12 @@
 # Symphony
 
-Autonomous agent system that polls Linear or Jira tickets and processes them with Claude Code in isolated git worktrees.
+Autonomous agent system that polls Linear, Jira, or GitHub Projects tickets and processes them with Claude Code in isolated git worktrees.
+
+**Default board for new Symphony automation work: `SY` (GitHub Projects)** — see UP-795 for the migration rationale (Linear Free is capped at 250 issues; GitHub Projects is 50,000 and free). The `WOR` board (Linear) is **read-only history** — no new tickets should be created there. To enumerate the WOR tickets still in flight at the cutover, run:
+
+```bash
+node --experimental-strip-types ~/symphony/scripts/list-open-wor-tickets.mts
+```
 
 ## How it works
 
@@ -15,16 +21,19 @@ Autonomous agent system that polls Linear or Jira tickets and processes them wit
 ```
 symphony/
   config/
-    symphony.json          — Global settings (assignee, concurrency, language preferences)
+    symphony.json                — Global settings (assignee, concurrency, language preferences)
     boards/
-      wor.json             — Workstream board (Linear team, state IDs, repos, projects)
+      sy.json                    — Symphony board (GitHub Projects, default for new automation work)
+      up.json                    — UI Platform board (Jira)
+      wor.json                   — Workstream board (Linear, read-only history)
   scripts/
-    poll-tickets.mts       — Multi-board poller (TypeScript, Node 22+)
-    poll-linear.mts        — Back-compat shim that imports poll-tickets.mts
-    run-ticket.sh          — Project-agnostic agent runner
-    pty-wrapper.py         — Spawns claude --remote-control in a PTY (for claude.ai session visibility)
-  secrets.env              — gitignored — LINEAR_API_KEY goes here
-  package.json             — { "type": "module", deps: chalk, cli-table3 }
+    poll-tickets.mts             — Multi-board poller (TypeScript, Node 22+)
+    poll-linear.mts              — Back-compat shim that imports poll-tickets.mts
+    run-ticket.sh                — Project-agnostic agent runner
+    list-open-wor-tickets.mts    — Enumerate open WOR tickets for manual triage post-cutover
+    pty-wrapper.py               — Spawns claude --remote-control in a PTY (for claude.ai session visibility)
+  secrets.env                    — gitignored — LINEAR_API_KEY, GITHUB_TOKEN
+  package.json                   — { "type": "module", deps: chalk, cli-table3 }
 ```
 
 ## Setup
