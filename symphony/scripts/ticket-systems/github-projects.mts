@@ -82,6 +82,12 @@ function splitOwnerRepo(ownerRepo: string): { owner: string; repo: string } {
   return { owner: ownerRepo.slice(0, slash), repo: ownerRepo.slice(slash + 1) };
 }
 
+interface GraphqlError {
+  message: string;
+  type?: string;
+  path?: Array<string | number>;
+}
+
 async function graphql<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
   const res = await fetch(GRAPHQL_ENDPOINT, {
     method: 'POST',
@@ -92,9 +98,21 @@ async function graphql<T>(query: string, variables?: Record<string, unknown>): P
     },
     body: JSON.stringify({ query, variables }),
   });
-  const json = (await res.json()) as { data?: T; errors?: { message: string }[] };
+  const json = (await res.json()) as { data?: T; errors?: GraphqlError[] };
   if (json.errors?.length) {
-    throw new Error(`[github-projects] GraphQL: ${json.errors.map((e) => e.message).join(', ')}`);
+    // The dual `user(login)` + `organization(login)` queries used to look up a
+    // ProjectV2 always produce a NOT_FOUND error for whichever branch doesn't
+    // match the owner's actual type — that's expected, not fatal. Filter those
+    // out when `data` is still populated.
+    const fatal = json.errors.filter((e) => {
+      if (e.type !== 'NOT_FOUND') return true;
+      const top = e.path?.[0];
+      if (top !== 'user' && top !== 'organization') return true;
+      return !json.data;
+    });
+    if (fatal.length) {
+      throw new Error(`[github-projects] GraphQL: ${fatal.map((e) => e.message).join(', ')}`);
+    }
   }
   if (!json.data) {
     throw new Error(`[github-projects] GraphQL returned no data (HTTP ${res.status})`);
