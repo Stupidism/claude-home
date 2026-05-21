@@ -95,6 +95,13 @@ After addressing all feedback, re-validate (read `$SKILLS_ROOT/validate/SKILL.md
 
 This happens when the ticket was bounced back to `In Progress` but the underlying work is already done — typically because the user merged the PR directly on GitHub, or all review threads were resolved in an earlier cycle.
 
-Do **not** silently exit — the poller will keep respawning a fresh agent on every cycle.
+Before declaring "no actionable feedback", verify **all** of the following:
 
-Instead, push the ticket back to `Human Review` by running `$SKILLS_ROOT/submit-for-review/SKILL.md`. The `handleHumanReview` PR-merged fast-path in `symphony/scripts/state-machine.mts` will then finalize the ticket to `Done` automatically.
+- No new developer instructions in ticket comments.
+- No unresolved PR review comments or inline code comments (human or bot).
+- CI is green.
+- **The AI code review cycle has completed for the current PR head.** Look on the ticket for a `[symphony] aiReviewRequested: <prUrl>` lock comment and on the PR for the corresponding AI reviewer response (e.g. Codex's "Didn't find any major issues" / CodeRabbit's review summary). If the lock comment is missing, or the AI reviewer has not yet posted back, the review is not complete — wait, do not skip to 3b. If the AI review left findings, treat them as actionable feedback and handle them in 3a first.
+
+If — and only if — all of the above hold, do **not** silently exit. The poller will keep respawning a fresh agent on every cycle.
+
+Push the ticket back to `Human Review` by running `$SKILLS_ROOT/submit-for-review/SKILL.md`. The `handleHumanReview` PR-merged / approval fast-path in `symphony/scripts/state-machine.mts` will then finalize the ticket automatically.

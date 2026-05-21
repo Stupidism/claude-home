@@ -49,12 +49,13 @@ If there are new comments with instructions (ignore `[symphony]` bot workpad com
 
 ## No actionable work
 
-If, after sweeping the ticket and the PR, there is nothing left to do — for example:
+A ticket only counts as "no actionable work" once **all** of the following are true:
 
-- The PR was merged externally (e.g. the user merged it directly on GitHub) and there are no follow-up comments to address.
-- All ticket comments and PR review comments have already been resolved in earlier cycles.
-- CI is green and there is no new feedback since the last review submission.
+- No new developer instructions in ticket comments.
+- No unresolved PR review comments or inline code comments (human or bot).
+- CI is green.
+- **The AI code review cycle has completed for the current PR head.** Look on the ticket for a `[symphony] aiReviewRequested: <prUrl>` comment (the lock posted by `handleHumanReview` in `symphony/scripts/state-machine.mts`) and on the PR for the corresponding AI reviewer response (e.g. Codex's "Didn't find any major issues" / CodeRabbit's review summary). If the lock comment is missing, or the AI reviewer has not yet posted back, the review is **not** complete — wait, do not declare done. If the AI review left findings, those count as actionable feedback and must be addressed first.
 
-…do **not** silently exit. The poller will respawn you on every cycle if the ticket stays in `In Progress`, burning tokens for no progress.
+If — and only if — all of the above hold, do **not** silently exit. The poller will respawn you on every cycle if the ticket stays in `In Progress`, burning tokens for no progress.
 
-Instead, push the ticket back to `Human Review` by running `$SKILLS_ROOT/submit-for-review/SKILL.md`. The `handleHumanReview` PR-merged fast-path (see `symphony/scripts/state-machine.mts`) will then finalize the ticket to `Done` without further agent work.
+Push the ticket back to `Human Review` by running `$SKILLS_ROOT/submit-for-review/SKILL.md`. The `handleHumanReview` PR-merged / approval fast-path (see `symphony/scripts/state-machine.mts`) will then finalize the ticket without further agent work.
