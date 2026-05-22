@@ -76,26 +76,39 @@ const ANSI_PATTERN = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g
 const rawStdoutWrite = process.stdout.write.bind(process.stdout);
 const rawStderrWrite = process.stderr.write.bind(process.stderr);
 {
-  fs.mkdirSync(path.dirname(POLLER_LOG_FILE), { recursive: true });
-  const logStream = fs.createWriteStream(POLLER_LOG_FILE, { flags: 'a' });
-  const teeWrite = (raw: typeof rawStdoutWrite): typeof rawStdoutWrite => {
-    return function (chunk: unknown, ...rest: unknown[]): boolean {
-      try {
-        const text = typeof chunk === 'string'
-          ? chunk
-          : Buffer.isBuffer(chunk) ? chunk.toString('utf8') : '';
-        const stripped = text.replace(ANSI_PATTERN, '');
-        if (stripped.replace(/\s/g, '').length > 0) logStream.write(stripped);
-      } catch {
-        // never let logging break the poller
-      }
-      // @ts-expect-error — forwarding variadic Node stream args
-      return raw(chunk, ...rest);
-    } as typeof rawStdoutWrite;
-  };
-  process.stdout.write = teeWrite(rawStdoutWrite);
-  process.stderr.write = teeWrite(rawStderrWrite);
-  logStream.write(`\n[${new Date().toISOString()}] [symphony] poller starting (pid=${process.pid})\n`);
+  // Best-effort tee: any failure here (read-only mount, permission drift, disk
+  // full) must not stop the poller from booting. If setup fails or the stream
+  // later emits an error, teeing is silently disabled and stdout/stderr keep
+  // working as before.
+  let logStream: fs.WriteStream | null = null;
+  try {
+    fs.mkdirSync(path.dirname(POLLER_LOG_FILE), { recursive: true });
+    logStream = fs.createWriteStream(POLLER_LOG_FILE, { flags: 'a' });
+    logStream.on('error', () => { logStream = null; });
+  } catch (err) {
+    rawStderrWrite(`[symphony] persistent log disabled: ${(err as Error).message}\n`);
+  }
+
+  if (logStream) {
+    const teeWrite = (raw: typeof rawStdoutWrite): typeof rawStdoutWrite => {
+      return function (chunk: unknown, ...rest: unknown[]): boolean {
+        try {
+          let text = '';
+          if (typeof chunk === 'string') text = chunk;
+          else if (chunk instanceof Uint8Array) text = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength).toString('utf8');
+          const stripped = text.replace(ANSI_PATTERN, '');
+          if (logStream && stripped.replace(/\s/g, '').length > 0) logStream.write(stripped);
+        } catch {
+          // never let logging break the poller
+        }
+        // @ts-expect-error — forwarding variadic Node stream args
+        return raw(chunk, ...rest);
+      } as typeof rawStdoutWrite;
+    };
+    process.stdout.write = teeWrite(rawStdoutWrite);
+    process.stderr.write = teeWrite(rawStderrWrite);
+    logStream.write(`\n[${new Date().toISOString()}] [symphony] poller starting (pid=${process.pid})\n`);
+  }
 }
 
 // ── Config types ──────────────────────────────────────────────────────────────
