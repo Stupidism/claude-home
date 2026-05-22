@@ -65,6 +65,39 @@ const DRY_RUN = process.argv.includes('--dry-run');
 const HTML_MODE = process.argv.includes('--html');
 const HTML_DASHBOARD_FILE = path.join(os.tmpdir(), 'symphony-dashboard.html');
 
+// ── Persistent log file (tee of stdout/stderr) ────────────────────────────────
+//
+// stdout/stderr are tee'd to logs/symphony-poller.log so trial diagnosis and
+// post-mortems have a grep-able audit trail (UP-813). ANSI escapes are stripped
+// before writing to the file; dashboard frames bypass the tee via the exported
+// `rawStdoutWrite` to avoid filling the log with repaints.
+const POLLER_LOG_FILE = path.join(SYMPHONY_ROOT, 'logs', 'symphony-poller.log');
+const ANSI_PATTERN = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+const rawStdoutWrite = process.stdout.write.bind(process.stdout);
+const rawStderrWrite = process.stderr.write.bind(process.stderr);
+{
+  fs.mkdirSync(path.dirname(POLLER_LOG_FILE), { recursive: true });
+  const logStream = fs.createWriteStream(POLLER_LOG_FILE, { flags: 'a' });
+  const teeWrite = (raw: typeof rawStdoutWrite): typeof rawStdoutWrite => {
+    return function (chunk: unknown, ...rest: unknown[]): boolean {
+      try {
+        const text = typeof chunk === 'string'
+          ? chunk
+          : Buffer.isBuffer(chunk) ? chunk.toString('utf8') : '';
+        const stripped = text.replace(ANSI_PATTERN, '');
+        if (stripped.replace(/\s/g, '').length > 0) logStream.write(stripped);
+      } catch {
+        // never let logging break the poller
+      }
+      // @ts-expect-error — forwarding variadic Node stream args
+      return raw(chunk, ...rest);
+    } as typeof rawStdoutWrite;
+  };
+  process.stdout.write = teeWrite(rawStdoutWrite);
+  process.stderr.write = teeWrite(rawStderrWrite);
+  logStream.write(`\n[${new Date().toISOString()}] [symphony] poller starting (pid=${process.pid})\n`);
+}
+
 // ── Config types ──────────────────────────────────────────────────────────────
 
 /** Slack-system config block. Appears at any level (global, board, project, repo)
@@ -937,8 +970,8 @@ function renderDashboard(): void {
   const ts = new Date().toTimeString().slice(0, 8);
   const dashboard = buildDashboard(ts);
   const lines = dashboard.split('\n');
-  if (lastDashboardLines > 0) process.stdout.write(`\x1b[${lastDashboardLines}A\x1b[0J`);
-  process.stdout.write(dashboard + '\n');
+  if (lastDashboardLines > 0) rawStdoutWrite(`\x1b[${lastDashboardLines}A\x1b[0J`);
+  rawStdoutWrite(dashboard + '\n');
   lastDashboardLines = lines.length;
   if (HTML_MODE) writeHtmlDashboard(ts);
 }
@@ -1040,7 +1073,7 @@ function writeHtmlDashboard(updatedAt: string): void {
 
 function log(msg: string): void {
   if (lastDashboardLines > 0) {
-    process.stdout.write(`\x1b[${lastDashboardLines}A\x1b[0J`);
+    rawStdoutWrite(`\x1b[${lastDashboardLines}A\x1b[0J`);
     lastDashboardLines = 0;
   }
   console.log(msg);
