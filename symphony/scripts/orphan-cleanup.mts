@@ -3,8 +3,8 @@
  * after a poller is SIGKILL'd / OOM'd / crashes (UP-789).
  *
  * Kept in a separate module so the heavy import-time side effects in
- * poll-tickets.mts (singleton lock, hot-reload watcher, main loop) don't
- * have to be triggered just to unit-test the pure scan/match logic.
+ * poll-tickets.mts (singleton lock, main loop) don't have to be triggered
+ * just to unit-test the pure scan/match logic.
  */
 
 import * as child_process from 'node:child_process';
