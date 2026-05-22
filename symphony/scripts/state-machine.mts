@@ -81,15 +81,16 @@ export interface Deps<Board extends BoardRef = BoardRef> {
   isPRUrlMerged(prUrl: string): boolean;
   checkHumanReviewApproval(ticket: Issue, board: Board): Promise<{
     alreadyHandled: boolean;
-    aiReviewed: boolean;
     approved: boolean;
-    /** First PR URL found in any comment — used for AI review + notify flows. */
+    /** First PR URL found in any comment — used as the trusted reference for
+     *  finalize-as-merged decisions when the synthesized-branch PR lookup
+     *  comes up empty. */
     prUrl: string | null;
     /**
-     * PR URL extracted only from Symphony-authored lock comments
-     * (`[symphony] aiReviewRequested:` / `[symphony] developerApproved:`).
-     * Trusted reference for finalize-as-merged decisions so an unrelated PR
-     * URL pasted in human discussion can't trigger a premature Done move.
+     * PR URL extracted only from a Symphony-authored `developerApproved:` lock
+     * comment. Trusted reference for finalize-as-merged decisions so an
+     * unrelated PR URL pasted in human discussion can't trigger a premature
+     * Done move.
      */
     lockedPrUrl: string | null;
     /**
@@ -102,7 +103,51 @@ export interface Deps<Board extends BoardRef = BoardRef> {
     lastFeedbackRerouteAt: Date | null;
   }>;
   postComment(board: Board, issueId: string, body: string): Promise<void>;
-  spawnAIReview(ticket: Issue, board: Board, prUrl: string): void;
+  /**
+   * Fire-and-forget AI review trigger for the PR at `prUrl`. Returns `true`
+   * iff the trigger was actually dispatched; returns `false` synchronously
+   * when the repo has AI review disabled (`codeReviewComment` empty in the
+   * resolved config).
+   */
+  spawnAIReview(ticket: Issue, board: Board, prUrl: string): boolean;
+  /**
+   * Sync probe: would `spawnAIReview` for this (ticket, board) actually
+   * dispatch? Used by `handleInProgress` to decide whether writing
+   * `symphony/ai-reviewed=pending` is safe — repos with AI review disabled
+   * would otherwise sit at `pending` forever with no review possible (Codex
+   * P1 on PR #68).
+   */
+  isAiReviewEnabled(ticket: Issue, board: Board): boolean;
+  /**
+   * Return the URL of the open PR for this ticket's synthesized branch, or
+   * null when no PR exists yet. Used in In Progress so AI-review orchestration
+   * can find the PR without scraping ticket comments.
+   */
+  getOpenPRUrl(ticket: Issue, board: Board): Promise<string | null>;
+  /**
+   * Resolve the current HEAD SHA of the PR at `prUrl`. Returns null when the
+   * PR is missing, closed, or the API call fails.
+   */
+  getPRHeadSha(prUrl: string): Promise<string | null>;
+  /**
+   * Read the `symphony/ai-reviewed` commit status on a specific SHA. Returns
+   * the GitHub status state (`'success'` / `'pending'` / `'error'` /
+   * `'failure'`) or null when no such status exists for that SHA.
+   */
+  getAiReviewStatus(prUrl: string, sha: string): Promise<'success' | 'pending' | 'error' | 'failure' | null>;
+  /**
+   * Write the `symphony/ai-reviewed` commit status on `sha`. Used to mark a
+   * fresh AI-review request as `pending` and to flip it to `success` once an
+   * AI / human reviewer has posted a review whose `commit_id` matches `sha`.
+   */
+  postAiReviewStatus(prUrl: string, sha: string, state: 'pending' | 'success', description: string): Promise<void>;
+  /**
+   * Return true iff the PR at `prUrl` has at least one review whose
+   * `commit_id` equals `sha`. Used to flip the `symphony/ai-reviewed` status
+   * from `pending` to `success` once an actual review for the current HEAD
+   * has landed.
+   */
+  hasReviewForSha(prUrl: string, sha: string): Promise<boolean>;
   /**
    * Return true if the PR has any review (state != APPROVED) or substantive
    * top-level comment newer than `since`. When `since` is null, returns true
@@ -153,7 +198,6 @@ export type Effect =
   | { kind: 'finalizeMerged' }
   | { kind: 'finalizeMergedDuringReview' }
   | { kind: 'humanReviewWaitForApproval' }
-  | { kind: 'humanReviewTriggerAI' }
   | { kind: 'humanReviewFeedbackReroute' }
   | { kind: 'humanReviewNotifyTeam' }
   | { kind: 'humanReviewApproved' }
@@ -161,7 +205,6 @@ export type Effect =
   | { kind: 'cancelledCleanup' };
 
 export const MAX_RETRIES = 3;
-export const AI_REVIEW_LOCK_PREFIX = '[symphony] aiReviewRequested:';
 export const APPROVAL_LOCK_PREFIX = '[symphony] developerApproved:';
 /** Stamped on the ticket workpad each time the poller hands AI/human PR feedback
  *  back to the agent. Body format: `${PREFIX} <prUrl> at=<ISO>` — the timestamp
@@ -186,7 +229,6 @@ export type TicketEvent =
   | { type: 'AGENT_FAILED' }                // inProgress → inProgress (retry)
   | { type: 'AGENT_EXHAUSTED' }             // inProgress → backlog (give up after MAX_RETRIES)
   | { type: 'RESUME' }                      // inProgress → inProgress (stale resume)
-  | { type: 'REVIEW_TRIGGER_AI' }           // humanReview → humanReview (post review comment)
   | { type: 'REVIEW_NOTIFY_TEAM' }          // humanReview → humanReview (label-gated team notify)
   | { type: 'REVIEW_APPROVED' }             // humanReview → merging (PR approved on GitHub)
   | { type: 'PR_MERGED_EARLY' }             // humanReview → done (reviewer merged directly)
@@ -226,7 +268,6 @@ export const ticketMachine = setup({
     },
     humanReview: {
       on: {
-        REVIEW_TRIGGER_AI: 'humanReview',
         REVIEW_NOTIFY_TEAM: 'humanReview',
         REVIEW_APPROVED: 'merging',
         PR_MERGED_EARLY: 'done',
@@ -291,8 +332,63 @@ async function handleTodo<B extends BoardRef>({ ticket, board, deps }: DispatchA
   return { kind: 'claim' };
 }
 
+/**
+ * AI review orchestration for the current PR HEAD (UP-806). Runs on every In
+ * Progress cycle independently of agent scheduling: if a PR exists and the
+ * `symphony/ai-reviewed` commit status on the current HEAD is absent, post a
+ * `pending` status and fire the AI review trigger; if it is `pending` and a
+ * review for that SHA has landed, flip the status to `success`. All operations
+ * best-effort — the gh CLI is unreliable enough that a failure here must not
+ * block the rest of handleInProgress.
+ */
+async function ensureAiReviewForCurrentHead<B extends BoardRef>(
+  ticket: Issue,
+  board: B,
+  deps: Deps<B>,
+): Promise<void> {
+  let prUrl: string | null = null;
+  try { prUrl = await deps.getOpenPRUrl(ticket, board); } catch { return; }
+  if (!prUrl) return;
+  let sha: string | null = null;
+  try { sha = await deps.getPRHeadSha(prUrl); } catch { return; }
+  if (!sha) return;
+  let status: 'success' | 'pending' | 'error' | 'failure' | null = null;
+  try { status = await deps.getAiReviewStatus(prUrl, sha); } catch { return; }
+  if (status === null) {
+    // Repos with AI review disabled (`codeReviewComment` empty in resolved
+    // config) must NOT receive a `pending` marker — no review can ever
+    // arrive, and the In Progress → Human Review gate would never pass
+    // (Codex P1 on PR #68).
+    if (!deps.isAiReviewEnabled(ticket, board)) return;
+    // Write `pending` BEFORE dispatching the trigger. If the status write
+    // fails, we leave the status absent and skip the trigger — the next
+    // cycle retries cleanly. Dispatching first would risk duplicate review
+    // requests every cycle that the status API stays broken (Codex P1 on
+    // PR #68).
+    try {
+      await deps.postAiReviewStatus(prUrl, sha, 'pending', 'AI review requested');
+    } catch (err) {
+      deps.log(`AI review pending status write failed for ${ticket.identifier}: ${err}`);
+      return;
+    }
+    deps.spawnAIReview(ticket, board, prUrl);
+    return;
+  }
+  if (status === 'pending') {
+    let reviewed = false;
+    try { reviewed = await deps.hasReviewForSha(prUrl, sha); } catch { return; }
+    if (reviewed) {
+      try { await deps.postAiReviewStatus(prUrl, sha, 'success', 'AI reviewer responded'); }
+      catch (err) { deps.log(`AI review status flip failed for ${ticket.identifier}: ${err}`); }
+    }
+  }
+}
+
 async function handleInProgress<B extends BoardRef>({ ticket, board, deps, prevState }: DispatchArgs<B>): Promise<Effect> {
   if (!deps.isEligible(ticket, board)) return { kind: 'noop', reason: 'not eligible' };
+  // AI review orchestration runs even when the agent is currently running, so
+  // a freshly pushed HEAD gets its review trigger on the same cycle.
+  await ensureAiReviewForCurrentHead(ticket, board, deps);
   if (deps.isAgentRunning(ticket.identifier)) return { kind: 'noop', reason: 'agent already running' };
   if (deps.failureCountFor(ticket.identifier) >= MAX_RETRIES) {
     return { kind: 'noop', reason: 'max retries exhausted' };
@@ -320,14 +416,12 @@ async function handleHumanReview<B extends BoardRef>({ ticket, board, deps }: Di
   // to safe defaults rather than throwing past the fast-path finalize block.
   let approvalInfo: {
     alreadyHandled: boolean;
-    aiReviewed: boolean;
     approved: boolean;
     prUrl: string | null;
     lockedPrUrl: string | null;
     lastFeedbackRerouteAt: Date | null;
   } = {
     alreadyHandled: false,
-    aiReviewed: false,
     approved: false,
     prUrl: null,
     lockedPrUrl: null,
@@ -338,7 +432,7 @@ async function handleHumanReview<B extends BoardRef>({ ticket, board, deps }: Di
   } catch (err) {
     deps.log(`checkHumanReviewApproval failed for ${ticket.identifier}: ${err}`);
   }
-  const { alreadyHandled, aiReviewed, approved, prUrl, lockedPrUrl, lastFeedbackRerouteAt } = approvalInfo;
+  const { alreadyHandled, approved, prUrl, lockedPrUrl, lastFeedbackRerouteAt } = approvalInfo;
 
   // Fallback: a Symphony-authored lock comment references a PR whose head
   // branch doesn't match the synthesized branch name (e.g. agent recognized
@@ -359,22 +453,12 @@ async function handleHumanReview<B extends BoardRef>({ ticket, board, deps }: Di
     return { kind: 'finalizeMergedDuringReview' };
   }
 
-  let triggeredAI = false;
-  if (!aiReviewed && prUrl) {
-    await deps.postComment(board, ticket.id, `${AI_REVIEW_LOCK_PREFIX} ${prUrl}`);
-    deps.spawnAIReview(ticket, board, prUrl);
-    triggeredAI = true;
-  }
-
   // Auto-reroute back to In Progress when a reviewer has actually left
-  // feedback on the PR. Gated on `aiReviewed` (the trigger comment exists, so
-  // the cycle that just spawned the AI reviewer doesn't immediately reroute
-  // before any review has been posted) and on `hasNewPRReviewSince` reporting
-  // a review newer than the last reroute lock (multi-round: every subsequent
-  // human/AI review starts a fresh feedback pass). The next cycle's
-  // handleInProgress will see prevState=humanReview and spawn the agent in
-  // `feedback` mode → pr-feedback-sweep picks up the new findings.
-  if (aiReviewed && !approved && !merged && prUrl) {
+  // feedback on the PR. UP-806: AI review now completes inside In Progress
+  // (the `symphony/ai-reviewed` commit status reflects the per-HEAD review
+  // state), so we no longer gate the reroute on a request-marker existing —
+  // any PR review newer than the last reroute lock counts as fresh feedback.
+  if (!approved && !merged && prUrl) {
     let hasFeedback = false;
     try {
       hasFeedback = await deps.hasNewPRReviewSince(prUrl, lastFeedbackRerouteAt);
@@ -421,9 +505,9 @@ async function handleHumanReview<B extends BoardRef>({ ticket, board, deps }: Di
   }
 
   if (alreadyHandled) {
-    return triggeredAI ? { kind: 'humanReviewTriggerAI' } : { kind: 'noop', reason: 'approval already handled' };
+    return { kind: 'noop', reason: 'approval already handled' };
   }
-  return triggeredAI ? { kind: 'humanReviewTriggerAI' } : { kind: 'humanReviewWaitForApproval' };
+  return { kind: 'humanReviewWaitForApproval' };
 }
 
 async function handleMerging<B extends BoardRef>({ ticket, board, deps }: DispatchArgs<B>): Promise<Effect> {

@@ -46,7 +46,6 @@ import type {
 } from './ticket-systems/types.mts';
 import {
   processTicket,
-  AI_REVIEW_LOCK_PREFIX,
   APPROVAL_LOCK_PREFIX,
   FEEDBACK_REROUTE_LOCK_PREFIX,
   NEEDS_NOTIFY_LABEL,
@@ -1697,7 +1696,6 @@ async function checkHumanReviewApproval(issue: Issue, board: BoardConfig) {
   const comments = await getAdapter(board).listComments(board, issue.id);
   const bodies = comments.map((c) => c.body);
   const alreadyHandled = bodies.some((b) => b.startsWith(APPROVAL_LOCK_PREFIX));
-  const aiReviewed = bodies.some((b) => b.startsWith(AI_REVIEW_LOCK_PREFIX));
   const approvalPattern = /\b(lgtm|approved?|looks good( to me)?|ship it|✅)\b/i;
   const prPattern = /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+/;
   const approved = bodies.some((b) => approvalPattern.test(b));
@@ -1705,8 +1703,13 @@ async function checkHumanReviewApproval(issue: Issue, board: BoardConfig) {
   // PR URL specifically from a Symphony-authored lock comment. Used as a
   // trusted reference for finalize-as-merged decisions so that an unrelated
   // PR URL pasted in human discussion can't trigger a premature Done move.
+  // Includes both APPROVAL_LOCK_PREFIX and FEEDBACK_REROUTE_LOCK_PREFIX so
+  // tickets that have been bounced back for feedback (but not yet approved)
+  // still have a trusted PR URL for the merged-fallback path (Codex P2 on
+  // PR #68 — removing the AI_REVIEW lock left lockedPrUrl null on most
+  // pre-approval tickets).
   const lockedPrUrl = bodies
-    .filter((b) => b.startsWith(AI_REVIEW_LOCK_PREFIX) || b.startsWith(APPROVAL_LOCK_PREFIX))
+    .filter((b) => b.startsWith(APPROVAL_LOCK_PREFIX) || b.startsWith(FEEDBACK_REROUTE_LOCK_PREFIX))
     .map((b) => b.match(prPattern)?.[0])
     .find(Boolean) ?? null;
   // Most recent `[symphony] feedbackReroute: <prUrl> at=<ISO>` timestamp. Used
@@ -1722,7 +1725,7 @@ async function checkHumanReviewApproval(issue: Issue, board: BoardConfig) {
   const lastFeedbackRerouteAt = rerouteTimes.length > 0
     ? new Date(Math.max(...rerouteTimes))
     : null;
-  return { alreadyHandled, aiReviewed, approved, prUrl, lockedPrUrl, lastFeedbackRerouteAt };
+  return { alreadyHandled, approved, prUrl, lockedPrUrl, lastFeedbackRerouteAt };
 }
 
 async function postComment(board: BoardConfig, issueId: string, body: string): Promise<void> {
@@ -1824,21 +1827,26 @@ function hasNewPRReviewSince(prUrl: string, since: Date | null): Promise<boolean
   });
 }
 
-function spawnAIReview(issue: Issue, board: BoardConfig, prUrl: string): void {
+function isAiReviewEnabled(issue: Issue, board: BoardConfig): boolean {
+  const repoConfig = resolveRepo(issue, board);
+  const projectConfig = resolveProject(issue, board) ?? undefined;
+  return Boolean(resolveGithub(symphonyConfig, board, projectConfig, repoConfig).codeReviewComment);
+}
+
+function spawnAIReview(issue: Issue, board: BoardConfig, prUrl: string): boolean {
   const prNumber = prUrl.match(/\/pull\/(\d+)/)?.[1];
-  if (!prNumber) return;
+  if (!prNumber) return false;
   const repoConfig = resolveRepo(issue, board);
   const projectConfig = resolveProject(issue, board) ?? undefined;
   // Resolved via global → board → project → repo deep-merge (UP-761). Repo-level
   // overrides win; an empty string at any level disables AI review.
   const codeReviewComment = resolveGithub(symphonyConfig, board, projectConfig, repoConfig).codeReviewComment;
-  if (!codeReviewComment) return; // no review configured for this repo/board — skip
+  if (!codeReviewComment) return false; // no review configured for this repo/board — skip
   const repoPath = repoConfig.path.replace(/^~/, process.env['HOME'] ?? '~');
 
   // Fire-and-forget the trigger comment. The AI reviewer leaves its feedback
-  // as a PR review; the next poll cycle detects it via hasNewPRReviewSince and
-  // reroutes the ticket back to In Progress, where the agent picks up the
-  // findings via pr-feedback-sweep.
+  // as a PR review; the next poll cycle detects it via hasReviewForSha and
+  // flips the symphony/ai-reviewed commit status from pending to success.
   const child = child_process.spawn(
     'gh',
     ['pr', 'comment', prNumber, '--body', codeReviewComment],
@@ -1851,6 +1859,148 @@ function spawnAIReview(issue: Issue, board: BoardConfig, prUrl: string): void {
   });
 
   log(chalk.blue(`[${timestamp()}] 🔍 AI review triggered for ${issue.identifier} (PR #${prNumber})`));
+  return true;
+}
+
+// ── AI review completion-marker helpers (UP-806) ──────────────────────────────
+//
+// The `symphony/ai-reviewed` commit status replaces the old
+// `[symphony] aiReviewRequested:` ticket-comment marker. A commit status is
+// per-SHA, so force-pushes naturally drop the marker without a separate clear
+// step. `pending` means the poller has asked the AI reviewer to look at this
+// SHA; `success` means a review whose `commit_id` matches that SHA has landed.
+
+const AI_REVIEW_CONTEXT = 'symphony/ai-reviewed';
+
+function parsePrRef(prUrl: string): { repo: string; prNumber: string } | null {
+  const repoMatch = prUrl.match(/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/);
+  const prMatch = prUrl.match(/\/pull\/(\d+)/);
+  if (!repoMatch || !prMatch) return null;
+  return { repo: repoMatch[1] as string, prNumber: prMatch[1] as string };
+}
+
+function getOpenPRUrl(issue: Issue, board: BoardConfig): Promise<string | null> {
+  const repo = resolveRepo(issue, board);
+  const repoPath = repo.path.replace(/^~/, process.env['HOME'] ?? '~');
+  const branch = branchForIssue(issue);
+  return new Promise<string | null>((resolve) => {
+    const child = child_process.spawn(
+      'gh',
+      ['pr', 'list', '--head', branch, '--state', 'open', '--json', 'url', '--limit', '1'],
+      { cwd: repoPath, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    let output = '';
+    child.stdout?.on('data', (d: Buffer) => (output += d.toString()));
+    child.on('error', () => resolve(null));
+    child.on('exit', (code) => {
+      if (code !== 0) return resolve(null);
+      try {
+        const data = JSON.parse(output) as Array<{ url: string }>;
+        resolve(data[0]?.url ?? null);
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}
+
+function getPRHeadSha(prUrl: string): Promise<string | null> {
+  const ref = parsePrRef(prUrl);
+  if (!ref) return Promise.resolve(null);
+  return new Promise<string | null>((resolve) => {
+    const child = child_process.spawn(
+      'gh',
+      ['pr', 'view', ref.prNumber, '--repo', ref.repo, '--json', 'headRefOid', '-q', '.headRefOid'],
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    let output = '';
+    child.stdout?.on('data', (d: Buffer) => (output += d.toString()));
+    child.on('error', () => resolve(null));
+    child.on('exit', (code) => {
+      if (code !== 0) return resolve(null);
+      const sha = output.trim();
+      resolve(sha.length > 0 ? sha : null);
+    });
+  });
+}
+
+function getAiReviewStatus(prUrl: string, sha: string): Promise<'success' | 'pending' | 'error' | 'failure' | null> {
+  const ref = parsePrRef(prUrl);
+  if (!ref) return Promise.resolve(null);
+  return new Promise<'success' | 'pending' | 'error' | 'failure' | null>((resolve) => {
+    const child = child_process.spawn(
+      'gh',
+      ['api', `repos/${ref.repo}/commits/${sha}/statuses`],
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    let output = '';
+    child.stdout?.on('data', (d: Buffer) => (output += d.toString()));
+    child.on('error', () => resolve(null));
+    child.on('exit', (code) => {
+      if (code !== 0) return resolve(null);
+      try {
+        const data = JSON.parse(output) as Array<{ context: string; state: string }>;
+        // Statuses are returned newest-first; the first match is authoritative.
+        const hit = data.find((s) => s.context === AI_REVIEW_CONTEXT);
+        if (!hit) return resolve(null);
+        if (hit.state === 'success' || hit.state === 'pending' || hit.state === 'error' || hit.state === 'failure') {
+          return resolve(hit.state);
+        }
+        resolve(null);
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}
+
+function postAiReviewStatus(prUrl: string, sha: string, state: 'pending' | 'success', description: string): Promise<void> {
+  const ref = parsePrRef(prUrl);
+  if (!ref) throw new Error(`postAiReviewStatus: cannot parse PR URL ${prUrl}`);
+  return new Promise<void>((resolve, reject) => {
+    const child = child_process.spawn(
+      'gh',
+      [
+        'api', `repos/${ref.repo}/statuses/${sha}`,
+        '--method', 'POST',
+        '-f', `state=${state}`,
+        '-f', `context=${AI_REVIEW_CONTEXT}`,
+        '-f', `description=${description}`,
+      ],
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    let stderr = '';
+    child.stderr?.on('data', (d: Buffer) => (stderr += d.toString()));
+    child.on('error', reject);
+    child.on('exit', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`gh api statuses exited ${code}: ${stderr.trim()}`));
+    });
+  });
+}
+
+function hasReviewForSha(prUrl: string, sha: string): Promise<boolean> {
+  const ref = parsePrRef(prUrl);
+  if (!ref) return Promise.resolve(false);
+  return new Promise<boolean>((resolve) => {
+    const child = child_process.spawn(
+      'gh',
+      ['pr', 'view', ref.prNumber, '--repo', ref.repo, '--json', 'reviews'],
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    let output = '';
+    child.stdout?.on('data', (d: Buffer) => (output += d.toString()));
+    child.on('error', () => resolve(false));
+    child.on('exit', (code) => {
+      if (code !== 0) return resolve(false);
+      try {
+        const data = JSON.parse(output) as { reviews: Array<{ commit?: { oid?: string }; commitId?: string }> };
+        resolve(data.reviews.some((r) => (r.commit?.oid ?? r.commitId) === sha));
+      } catch {
+        resolve(false);
+      }
+    });
+  });
 }
 
 // ── Worktree cleanup ──────────────────────────────────────────────────────────
@@ -2088,6 +2238,12 @@ async function poll(): Promise<void> {
       checkHumanReviewApproval,
       postComment,
       spawnAIReview,
+      isAiReviewEnabled,
+      getOpenPRUrl,
+      getPRHeadSha,
+      getAiReviewStatus,
+      postAiReviewStatus,
+      hasReviewForSha,
       hasNewPRReviewSince,
       spawnNotifyReview,
       addLabel,
@@ -2212,7 +2368,9 @@ async function poll(): Promise<void> {
       moveToInProgress, moveToHumanReview, moveToMerging, moveToTodo, moveToDone,
       spawnAgent, resetReworkTicket, removeWorktree, cleanupCancelledTicket,
       areAllPRsMerged, isPRUrlMerged,
-      checkHumanReviewApproval, postComment, spawnAIReview, hasNewPRReviewSince, spawnNotifyReview, addLabel,
+      checkHumanReviewApproval, postComment, spawnAIReview, isAiReviewEnabled,
+      getOpenPRUrl, getPRHeadSha, getAiReviewStatus, postAiReviewStatus, hasReviewForSha,
+      hasNewPRReviewSince, spawnNotifyReview, addLabel,
       isAgentRunning: (id) => runningAgents.has(id),
       agentSlotsAvailable: () => Math.max(0, MAX_CONCURRENT - runningAgents.size),
       failureCountFor: (id) => failureCounts.get(id) ?? 0,

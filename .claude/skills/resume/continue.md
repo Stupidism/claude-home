@@ -46,3 +46,16 @@ If there are new comments with instructions (ignore `[symphony]` bot workpad com
 - Update the workpad with what was found and resolved
 
 **Then continue where you left off.**
+
+## No actionable work
+
+A ticket only counts as "no actionable work" once **all** of the following are true:
+
+- No new developer instructions in ticket comments.
+- No unresolved PR review comments or inline code comments (human or bot).
+- CI is green.
+- **The AI code review cycle has completed for the current PR head.** Check the GitHub commit status `symphony/ai-reviewed` on the current PR HEAD (`gh api repos/<owner>/<repo>/commits/<sha>/statuses --jq '.[] | select(.context=="symphony/ai-reviewed")'`). The poller sets it to `pending` when it fires the AI review trigger from `handleInProgress` and flips it to `success` once a review whose `commit_id` matches that SHA has landed (UP-806). If the status is missing or `pending`, the review is **not** complete — wait, do not declare done. If the AI review left actionable findings, address them first.
+
+If — and only if — all of the above hold, do **not** silently exit. The poller will respawn you on every cycle if the ticket stays in `In Progress`, burning tokens for no progress.
+
+Push the ticket back to `Human Review` by running `$SKILLS_ROOT/submit-for-review/SKILL.md`. The `handleHumanReview` PR-merged / approval fast-path (see `symphony/scripts/state-machine.mts`) will then finalize the ticket without further agent work.
