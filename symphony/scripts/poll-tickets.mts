@@ -1379,7 +1379,10 @@ function setupHotReload(): void {
   try {
     const { execSync } = await import('child_process');
     // Match both the new entry point and the `poll-linear.mts` back-compat shim.
-    const out = execSync('pgrep -f "symphony/scripts/poll-(tickets|linear)"', { encoding: 'utf8' }).trim();
+    // Anchor on `node` as the executable so a spawned child whose argv merely
+    // mentions the script path (e.g. run-ticket.sh forwarding a ticket body
+    // that quotes the filename) does not false-positive.
+    const out = execSync('pgrep -f "^[^ ]*node .*symphony/scripts/poll-(tickets|linear)\\.mts"', { encoding: 'utf8' }).trim();
     const pids = out.split('\n').map(Number).filter((p) => p && p !== process.pid);
     if (pids.length > 0) {
       console.error(chalk.red(`[symphony] Another poller already running (PID ${pids.join(', ')}). Kill it first: kill ${pids.join(' ')}`));
