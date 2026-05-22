@@ -130,6 +130,29 @@ interface ProjectSchema {
 }
 
 const schemaCache = new Map<string, ProjectSchema>();
+const ownerKindCache = new Map<string, 'user' | 'organization'>();
+
+// `repositoryOwner` is the canonical "is this a User or Organization?" probe —
+// it returns null cleanly when the login doesn't exist, with no GraphQL error,
+// so we can pick the right root field for follow-up queries without provoking
+// "Could not resolve to ..." errors from probing both sides.
+async function resolveOwnerKind(owner: string): Promise<'user' | 'organization'> {
+  const cached = ownerKindCache.get(owner);
+  if (cached) return cached;
+  const data = await graphql<{ repositoryOwner: { __typename: string } | null }>(
+    `query OwnerKind($owner: String!) {
+      repositoryOwner(login: $owner) { __typename }
+    }`,
+    { owner }
+  );
+  const tn = data.repositoryOwner?.__typename;
+  if (tn !== 'User' && tn !== 'Organization') {
+    throw new Error(`[github-projects] Owner "${owner}" is neither a User nor an Organization (got ${tn ?? 'null'})`);
+  }
+  const kind = tn === 'User' ? 'user' : 'organization';
+  ownerKindCache.set(owner, kind);
+  return kind;
+}
 
 async function getProjectSchema(board: BoardLike): Promise<ProjectSchema> {
   const cfg = ghOf(board);
@@ -140,22 +163,16 @@ async function getProjectSchema(board: BoardLike): Promise<ProjectSchema> {
   const cached = schemaCache.get(cacheKey);
   if (cached) return cached;
 
-  // The owner may be a user or an org. Querying both lets one return null.
-  const data = await graphql<{
-    user: { projectV2: ProjectQueryNode | null } | null;
-    organization: { projectV2: ProjectQueryNode | null } | null;
-  }>(
+  const kind = await resolveOwnerKind(cfg.owner);
+  const data = await graphql<Record<string, { projectV2: ProjectQueryNode | null } | null>>(
     `query ProjectSchema($owner: String!, $number: Int!) {
-      user(login: $owner) {
-        projectV2(number: $number) { ${PROJECT_QUERY_FIELDS} }
-      }
-      organization(login: $owner) {
+      ${kind}(login: $owner) {
         projectV2(number: $number) { ${PROJECT_QUERY_FIELDS} }
       }
     }`,
     { owner: cfg.owner, number: cfg.projectNumber }
   );
-  const project = data.user?.projectV2 ?? data.organization?.projectV2;
+  const project = data[kind]?.projectV2;
   if (!project) {
     throw new Error(`[github-projects] Project #${cfg.projectNumber} not found under owner "${cfg.owner}"`);
   }
@@ -275,25 +292,20 @@ const ITEM_FIELDS = `
 
 async function fetchAllItems(board: BoardLike): Promise<RawProjectItem[]> {
   const cfg = ghOf(board);
+  const kind = await resolveOwnerKind(cfg.owner);
   const all: RawProjectItem[] = [];
   let cursor: string | null = null;
   // Cap pagination — Symphony states normally hold tens of items, not thousands.
   for (let page = 0; page < 10; page++) {
-    const data: {
-      user: { projectV2: { items: ItemsPage } | null } | null;
-      organization: { projectV2: { items: ItemsPage } | null } | null;
-    } = await graphql(
+    const data: Record<string, { projectV2: { items: ItemsPage } | null } | null> = await graphql(
       `query ProjectItems($owner: String!, $number: Int!, $cursor: String) {
-        user(login: $owner) {
-          projectV2(number: $number) { items(first: 100, after: $cursor) { ${ITEMS_PAGE_FIELDS} } }
-        }
-        organization(login: $owner) {
+        ${kind}(login: $owner) {
           projectV2(number: $number) { items(first: 100, after: $cursor) { ${ITEMS_PAGE_FIELDS} } }
         }
       }`,
       { owner: cfg.owner, number: cfg.projectNumber, cursor }
     );
-    const items = data.user?.projectV2?.items ?? data.organization?.projectV2?.items;
+    const items = data[kind]?.projectV2?.items;
     if (!items) break;
     all.push(...items.nodes);
     if (!items.pageInfo.hasNextPage) break;

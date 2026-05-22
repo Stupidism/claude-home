@@ -950,13 +950,9 @@ function renderDashboard(): void {
  */
 /**
  * Open the rendered dashboard in the user's default browser on startup so
- * `--html` is one-shot — no need to copy/paste the path. Hot reload re-execs
- * this script in a fresh process, which would normally re-open the page; the
- * SYMPHONY_HTML_OPENED env flag suppresses that.
+ * `--html` is one-shot — no need to copy/paste the path.
  */
 function openHtmlDashboard(): void {
-  if (process.env['SYMPHONY_HTML_OPENED'] === '1') return;
-  process.env['SYMPHONY_HTML_OPENED'] = '1';
   const cmd = process.platform === 'darwin' ? 'open'
     : process.platform === 'win32' ? 'start'
     : 'xdg-open';
@@ -1191,9 +1187,9 @@ async function restartAgent(identifier: string): Promise<void> {
  *   help / h / ?  — show available commands
  *
  * stdin EIO/EAGAIN errors (e.g. child processes spawned with `stdio: 'inherit'`
- * briefly stealing the TTY during hot reload) are swallowed so the poller
- * stays alive. The readline interface is rebuilt after a fatal stream error
- * so subsequent input keeps working.
+ * briefly stealing the TTY) are swallowed so the poller stays alive. The
+ * readline interface is rebuilt after a fatal stream error so subsequent
+ * input keeps working.
  */
 let interactiveCommandsActive = false;
 let activeReadline: readline.Interface | null = null;
@@ -1301,59 +1297,6 @@ function setupInteractiveCommands(): void {
 
   // Don't let readline close the process when stdin ends
   rl.on('close', () => {});
-}
-
-// ── Hot reload on script / config change ─────────────────────────────────────
-
-/**
- * Watch scripts/ and config/ for changes and re-exec the poller.
- * The child waits for this PID to exit before starting, so it never races
- * the singleton PID lock. Running agent subprocesses are left intact —
- * the new poller's activePidFile + isPidAlive check prevents duplicate spawns.
- */
-let reloadScheduled = false;
-let reloadTimer: NodeJS.Timeout | null = null;
-
-function reloadNow(reason: string): void {
-  if (reloadScheduled) return;
-  reloadScheduled = true;
-  log(chalk.yellow(`[${timestamp()}] ⟳ Hot reload: ${reason} — restarting poller`));
-
-  const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
-  // Preserve execArgv (e.g. --experimental-strip-types) — without it the re-exec
-  // cannot parse .mts. Inherit stdio so the dashboard and interactive commands
-  // (resume, help) keep working after the restart.
-  const cmd = [process.execPath, ...process.execArgv, ...process.argv.slice(1)].map(quote).join(' ');
-  const pid = process.pid;
-  child_process.spawn(
-    'sh',
-    ['-c', `while kill -0 ${pid} 2>/dev/null; do sleep 0.2; done; exec ${cmd}`],
-    { detached: false, stdio: 'inherit', cwd: process.cwd() }
-  ).unref();
-
-  setTimeout(() => process.exit(0), 100);
-}
-
-function setupHotReload(): void {
-  const watchDirs = [
-    path.join(SYMPHONY_ROOT, 'scripts'),
-    path.join(CONFIG_DIR),
-  ];
-  const ignore = /(^\.|~$|\.swp$|\.tmp$)/;
-  for (const dir of watchDirs) {
-    if (!fs.existsSync(dir)) continue;
-    try {
-      fs.watch(dir, { recursive: true, persistent: false }, (_event, filename) => {
-        if (!filename) return;
-        const base = path.basename(filename.toString());
-        if (ignore.test(base)) return;
-        if (reloadTimer) clearTimeout(reloadTimer);
-        reloadTimer = setTimeout(() => reloadNow(filename.toString()), 500);
-      });
-    } catch (err) {
-      log(chalk.yellow(`[symphony] Hot reload disabled for ${dir}: ${(err as Error).message}`));
-    }
-  }
 }
 
 // ── Poller singleton lock ─────────────────────────────────────────────────────
@@ -2022,9 +1965,9 @@ async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
 
   // ── Pass 2: rogue claude / node / bash by worktree-path match ─────────────
   //
-  // If a poller crashed before writing the pid file, or if a hot-reload chain
-  // dropped a tracking record, the pid-file pass misses those PIDs. Walk every
-  // process on the system and match against the configured worktrees roots so
+  // If a poller crashed before writing the pid file, the pid-file pass misses
+  // those PIDs. Walk every process on the system and match against the
+  // configured worktrees roots so
   // we catch leftover `claude`, `python3 pty-wrapper.py`, `bash run-ticket.sh`,
   // and nested tool subprocesses by their argv. Skip anything the live
   // runningAgents map already manages (its descendants share the same path).
@@ -2385,7 +2328,6 @@ console.log(
 console.log('');
 
 setupInteractiveCommands();
-setupHotReload();
 loadLastObservedState();
 
 while (true) {
