@@ -2412,12 +2412,21 @@ async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
     // session as a mismatch and destructively wipe its claude history.
     if (psRows.length > 0) {
       const cmd = psByPid.get(pid) ?? '';
-      // Require `run-ticket.sh <identifier>` with a trailing space so the
-      // ticket id can't accidentally match inside another ticket's title /
-      // description arg.
-      const expectedMarker = new RegExp(`\\brun-ticket\\.sh\\s+${identifier}\\s`);
-      if (!expectedMarker.test(cmd)) {
-        log(chalk.dim(`[${timestamp()}] ⏹ pid file for ${identifier} (PID ${pid}) doesn't match run-ticket.sh — treating as dead`));
+      // Accept the bash wrapper *or* a direct `claude --resume <session>`
+      // (the rate-limit recovery path spawns claude itself and writes the
+      // pid file with that PID — see the rateLimitPausedSessions loop).
+      // Reading the recorded session id lets us still reject PID reuse for
+      // resumed agents.
+      const runTicketRe = new RegExp(`\\brun-ticket\\.sh\\s+${identifier}\\s`);
+      let matched = runTicketRe.test(cmd);
+      if (!matched && recordedWorktree) {
+        try {
+          const sid = fs.readFileSync(path.join(recordedWorktree, '.claude-session-id'), 'utf8').trim();
+          if (sid && cmd.includes(sid)) matched = true;
+        } catch { /* no pointer — can't verify, fall through to mismatch */ }
+      }
+      if (!matched) {
+        log(chalk.dim(`[${timestamp()}] ⏹ pid file for ${identifier} (PID ${pid}) doesn't match run-ticket.sh / claude --resume — treating as dead`));
         fs.rmSync(filePath, { force: true });
         wipeStaleClaudeSession(identifier, recordedWorktree);
         continue;
