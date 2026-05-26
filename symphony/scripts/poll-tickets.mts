@@ -2502,6 +2502,12 @@ async function poll(): Promise<void> {
   // state — even when the ticket disappeared from this board's queried states
   // entirely (e.g. moved to Done / Backlog / dropped from the board).
   const allInProgressOrMergingIds = new Set<string>();
+  // Set to true once at least one board's ticket fetch completes without
+  // throwing — regardless of whether that board currently has any tickets.
+  // The adopted-agent sweep below keys off this so an empty-but-healthy
+  // board still releases stale adopted slots; using `allActiveIdentifiers.size`
+  // would silently skip the sweep whenever every ticket happens to be Done.
+  let anyBoardFetched = false;
 
   for (const board of boards) {
     let todoTickets: Issue[], inProgressTickets: Issue[], humanReviewTickets: Issue[], mergingTickets: Issue[], reworkTickets: Issue[], cancelledTickets: Issue[];
@@ -2531,6 +2537,7 @@ async function poll(): Promise<void> {
       continue;
     }
 
+    anyBoardFetched = true;
     for (const t of [...todoTickets, ...inProgressTickets, ...humanReviewTickets, ...mergingTickets, ...reworkTickets]) {
       allActiveIdentifiers.add(t.identifier);
     }
@@ -2680,8 +2687,7 @@ async function poll(): Promise<void> {
   // Backlog / dropped) eventually release their concurrency slot. Skipped
   // when no boards reported successfully this cycle so a transient API
   // failure doesn't wipe the whole board.
-  const anyBoardReported = allActiveIdentifiers.size > 0 || allInProgressOrMergingIds.size > 0;
-  if (anyBoardReported) {
+  if (anyBoardFetched) {
     for (const identifier of [...adoptedAgents.keys()]) {
       if (!allInProgressOrMergingIds.has(identifier)) {
         log(chalk.dim(`[${timestamp()}] ⏹ ${identifier} no longer active (adopted) — stopping agent`));
