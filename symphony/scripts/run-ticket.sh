@@ -164,7 +164,11 @@ if [ "$FRESH" = "--fresh" ]; then
     if [ -f "$PREV_SID_FILE" ]; then
       PREV_SID="$(cat "$PREV_SID_FILE" 2>/dev/null || true)"
       PREV_PROJECT_DIR="${HOME}/.claude/projects/$(echo "$WORKTREE_PATH" | tr '/' '-')"
-      if [ -n "$PREV_SID" ] && [ -f "${PREV_PROJECT_DIR}/${PREV_SID}.jsonl" ]; then
+      # Gate the rm on a strict UUID shape (matches the `uuid.uuid4()` value
+      # this script writes below). A crafted pointer file with `../` could
+      # otherwise redirect the deletion outside the intended project dir.
+      if echo "$PREV_SID" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' \
+        && [ -f "${PREV_PROJECT_DIR}/${PREV_SID}.jsonl" ]; then
         rm -f "${PREV_PROJECT_DIR}/${PREV_SID}.jsonl"
         echo "[run] Wiped stale claude session jsonl ${PREV_SID:0:8}…"
       fi

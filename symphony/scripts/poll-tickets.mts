@@ -965,7 +965,23 @@ interface AgentEntry {
 }
 
 const runningAgents = new Map<string, AgentEntry>();
+/**
+ * Orphan agents adopted from a previous poller (SY-66). The current poller
+ * never had a `child_process` handle for these PIDs, so they live in a
+ * separate map from `runningAgents`. They DO count toward `MAX_CONCURRENT`
+ * and `isAgentActive` so we don't oversubscribe slots or treat an adopted
+ * ticket as "agent-free" while its work is in flight.
+ */
+const adoptedAgents = new Map<string, { pid: number; worktreePath: string | null }>();
 let isShuttingDown = false;
+
+/** True if `identifier` has either a tracked or adopted agent in flight. */
+function isAgentActive(identifier: string): boolean {
+  return runningAgents.has(identifier) || adoptedAgents.has(identifier);
+}
+function activeAgentCount(): number {
+  return runningAgents.size + adoptedAgents.size;
+}
 type DashboardState = 'todo' | 'blocked' | 'inProgress' | 'humanReview' | 'merging' | 'rework';
 interface DashboardRow { ticket: Issue; board: BoardConfig; state: DashboardState }
 let lastSnapshot: DashboardRow[] = [];
@@ -1050,7 +1066,7 @@ function buildDashboard(updatedAt: string): string {
   if (!rows.length) table.push([chalk.dim('(none)'), chalk.dim('—'), chalk.dim('—'), chalk.dim('—'), chalk.dim('—')]);
 
   let out = table.toString();
-  out += `\n  ${chalk.dim(`Updated ${updatedAt}  •  agents ${runningAgents.size}/${MAX_CONCURRENT}  •  boards: ${boards.map((b) => b.ticketPrefix).join(', ')}  •  next poll in ${POLL_INTERVAL_MS / 1000}s`)}`;
+  out += `\n  ${chalk.dim(`Updated ${updatedAt}  •  agents ${activeAgentCount()}/${MAX_CONCURRENT}  •  boards: ${boards.map((b) => b.ticketPrefix).join(', ')}  •  next poll in ${POLL_INTERVAL_MS / 1000}s`)}`;
   out += `\n  ${chalk.dim(`Type ${chalk.white('resume <id>')} / ${chalk.white('kill <id>')} / ${chalk.white('restart <id>')}  •  ${chalk.white('help')} for commands`)}`;
   return out;
 }
@@ -1147,7 +1163,7 @@ function writeHtmlDashboard(updatedAt: string): void {
   const html = buildDashboardHtml({
     rows: htmlRows,
     updatedAt,
-    runningAgents: runningAgents.size,
+    runningAgents: activeAgentCount(),
     maxConcurrent: MAX_CONCURRENT,
     boards: boards.map((b) => b.ticketPrefix),
     pollIntervalSeconds: Math.round(POLL_INTERVAL_MS / 1000),
@@ -2193,7 +2209,7 @@ async function cleanupDoneWorktrees(activeIdentifiers: Set<string>, board: Board
       const match = entry.match(prefixRe) ?? entry.match(fallbackRe);
       if (!match) continue;
       const identifier = match[1].toUpperCase();
-      if (activeIdentifiers.has(identifier) || runningAgents.has(identifier)) continue;
+      if (activeIdentifiers.has(identifier) || isAgentActive(identifier)) continue;
 
       const worktreePath = path.join(worktreesDir, entry);
       if (!fs.statSync(worktreePath).isDirectory()) continue;
@@ -2290,7 +2306,11 @@ function wipeStaleClaudeSession(identifier: string): void {
     sessionId = fs.readFileSync(pointerFile, 'utf8').trim();
     if (!sessionId) sessionId = null;
   } catch { /* no pointer — nothing to wipe */ }
-  if (sessionId) {
+  // Gate the rm on a strict UUID shape (matches the `uuid.uuid4()` value
+  // run-ticket.sh writes). A crafted pointer file with `../` could otherwise
+  // redirect the deletion outside the project dir.
+  const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+  if (sessionId && UUID_RE.test(sessionId)) {
     const home = process.env['HOME'] ?? '~';
     const projectDir = path.join(home, '.claude', 'projects', worktreePath.replace(/\//g, '-'));
     const jsonl = path.join(projectDir, `${sessionId}.jsonl`);
@@ -2316,7 +2336,10 @@ async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
   // delete the matching `.claude-session-id` + `~/.claude/projects/<dir>/<sid>.jsonl`
   // so Claude Desktop doesn't accumulate stale remote-control entries when a
   // fresh session is spawned.
-  const adoptedIdentifiers = new Set<string>();
+  // Rebuild the adopted-agents map from scratch each cycle so dead PIDs drop
+  // out automatically — keeps MAX_CONCURRENT slot accounting honest without a
+  // separate exit handler we can't attach to a process we don't own.
+  adoptedAgents.clear();
   const files = fs.readdirSync(logsDir).filter((f) => f.startsWith('agent-pid-') && f.endsWith('.pid'));
   for (const file of files) {
     const match = file.match(/^agent-pid-([A-Z]+-\d+)\.pid$/i);
@@ -2329,8 +2352,9 @@ async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
     if (!isPidAlive(pid)) { fs.rmSync(filePath, { force: true }); wipeStaleClaudeSession(identifier); continue; }
     if (runningAgents.has(identifier)) continue;
 
+    const worktreePath = findWorktreePathForIdentifier(identifier);
+    adoptedAgents.set(identifier, { pid, worktreePath });
     log(chalk.dim(`[${timestamp()}] ↩ Adopting orphan agent ${identifier} (PID ${pid}) — leaving its claude session intact`));
-    adoptedIdentifiers.add(identifier);
   }
 
   // ── Pass 2: rogue claude / node / bash by worktree-path match ─────────────
@@ -2352,11 +2376,12 @@ async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
   for (const { proc } of runningAgents.values()) {
     if (proc.pid !== undefined) skip.add(proc.pid);
   }
+  for (const { pid } of adoptedAgents.values()) skip.add(pid);
   // Worktree paths whose process trees must survive Pass 2 — both the
   // poller-tracked agents and the adopted orphans from Pass 1.
   const liveTreePaths = [
     ...liveAgentWorktreePaths(),
-    ...[...adoptedIdentifiers].map((id) => findWorktreePathForIdentifier(id)).filter((p): p is string => p !== null),
+    ...[...adoptedAgents.values()].map((a) => a.worktreePath).filter((p): p is string => p !== null),
   ];
   const isUnderLiveAgent = (cmd: string): boolean =>
     liveTreePaths.some((p) => cmd.includes(p));
@@ -2498,8 +2523,8 @@ async function poll(): Promise<void> {
       hasNewPRReviewSince,
       spawnNotifyReview,
       addLabel,
-      isAgentRunning: (id) => runningAgents.has(id),
-      agentSlotsAvailable: () => Math.max(0, MAX_CONCURRENT - runningAgents.size),
+      isAgentRunning: (id) => isAgentActive(id),
+      agentSlotsAvailable: () => Math.max(0, MAX_CONCURRENT - activeAgentCount()),
       failureCountFor: (id) => failureCounts.get(id) ?? 0,
       resetFailureCount: (id) => { failureCounts.set(id, 0); },
       worktreeOccupiedBy,
@@ -2596,7 +2621,7 @@ async function poll(): Promise<void> {
   lastSnapshot = allSnapshot;
   renderDashboard();
 
-  if (runningAgents.size >= MAX_CONCURRENT) return;
+  if (activeAgentCount() >= MAX_CONCURRENT) return;
 
   // Spawn new agents for todo tickets — delegate per-ticket to processTicket('todo').
   // Done in a second pass after Human Review / Merging / etc. so freed slots are
@@ -2604,8 +2629,8 @@ async function poll(): Promise<void> {
   // handler run above; here we just want fresh Todos.
   for (const { ticket, board } of allEligible) {
     if (lastKnownState.get(ticket.identifier) !== 'todo') continue; // skip inProgress entries
-    if (runningAgents.has(ticket.identifier)) continue;
-    if (runningAgents.size >= MAX_CONCURRENT) break;
+    if (isAgentActive(ticket.identifier)) continue;
+    if (activeAgentCount() >= MAX_CONCURRENT) break;
     // Validate runtime before claiming the ticket. If we waited until spawnAgent
     // throws, handleTodo would have already moved it to In Progress, leaving a
     // typo'd ticket stuck with no running agent.
@@ -2622,8 +2647,8 @@ async function poll(): Promise<void> {
       checkHumanReviewApproval, postComment, spawnAIReview, isAiReviewEnabled,
       getOpenPRUrl, getPRHeadSha, getAiReviewStatus, postAiReviewStatus, hasReviewForSha,
       hasNewPRReviewSince, spawnNotifyReview, addLabel,
-      isAgentRunning: (id) => runningAgents.has(id),
-      agentSlotsAvailable: () => Math.max(0, MAX_CONCURRENT - runningAgents.size),
+      isAgentRunning: (id) => isAgentActive(id),
+      agentSlotsAvailable: () => Math.max(0, MAX_CONCURRENT - activeAgentCount()),
       failureCountFor: (id) => failureCounts.get(id) ?? 0,
       resetFailureCount: (id) => { failureCounts.set(id, 0); },
       worktreeOccupiedBy,
