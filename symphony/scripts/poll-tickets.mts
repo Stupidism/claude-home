@@ -2243,17 +2243,63 @@ function liveAgentWorktreePaths(): string[] {
   return [...runningAgents.values()].map((a) => a.worktreePath);
 }
 
-function killOrphanedNxDaemons(): void {
-  // Shutdown caller: every agent is being torn down, so any nx daemon under
-  // a Symphony-managed worktree / repo root is fair game. The prefix scope
-  // is the only thing protecting other workspaces' daemons.
-  const rows = snapshotPsByCommand();
-  const pids = findNxDaemonPids(rows, symphonyManagedPathPrefixes());
-  if (pids.length === 0) return;
-  for (const pid of pids) {
-    try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
+/**
+ * Locate the worktree directory for a ticket identifier by scanning every
+ * configured `worktreesDir` for a folder name matching `feat-<id>-…`. Used by
+ * orphan cleanup to clean stale `.claude-session-id` pointers + jsonl files
+ * for tickets whose agent has died. Returns the first match or null.
+ */
+function findWorktreePathForIdentifier(identifier: string): string | null {
+  const home = process.env['HOME'] ?? '~';
+  const prefix = `feat-${identifier}-`;
+  const seen = new Set<string>();
+  for (const board of boards) {
+    for (const repo of board.repos) {
+      const dir = repo.worktreesDir.replace(/^~/, home);
+      if (seen.has(dir)) continue;
+      seen.add(dir);
+      try {
+        for (const name of fs.readdirSync(dir)) {
+          if (name === prefix.slice(0, -1) || name.startsWith(prefix)) {
+            return path.join(dir, name);
+          }
+        }
+      } catch { /* worktrees dir missing — fine */ }
+    }
   }
-  log(chalk.dim(`[${timestamp()}] ⏹ Sent SIGTERM to ${pids.length} nx daemon process(es)`));
+  return null;
+}
+
+/**
+ * Erase the previous claude session for a dead orphan agent: remove the
+ * `~/.claude/projects/<encoded-worktree>/<session-id>.jsonl` jsonl plus the
+ * `.claude-session-id` pointer file inside the worktree. Keeps Claude Desktop
+ * from accumulating stale remote-control entries when a fresh session is
+ * spawned on the next poll cycle (SY-66). Best-effort — never throws.
+ *
+ * Only called for *dead* orphan PIDs. Adopted (alive) agents keep their
+ * pointer + jsonl intact so their conversation history survives across
+ * poller restarts.
+ */
+function wipeStaleClaudeSession(identifier: string): void {
+  const worktreePath = findWorktreePathForIdentifier(identifier);
+  if (!worktreePath) return;
+  const pointerFile = path.join(worktreePath, '.claude-session-id');
+  let sessionId: string | null = null;
+  try {
+    sessionId = fs.readFileSync(pointerFile, 'utf8').trim();
+    if (!sessionId) sessionId = null;
+  } catch { /* no pointer — nothing to wipe */ }
+  if (sessionId) {
+    const home = process.env['HOME'] ?? '~';
+    const projectDir = path.join(home, '.claude', 'projects', worktreePath.replace(/\//g, '-'));
+    const jsonl = path.join(projectDir, `${sessionId}.jsonl`);
+    try {
+      fs.rmSync(jsonl, { force: true });
+      log(chalk.dim(`[${timestamp()}] ⏹ Wiped stale session ${sessionId.slice(0, 8)}… for ${identifier}`));
+    } catch { /* best-effort */ }
+  }
+  try { fs.rmSync(pointerFile, { force: true }); } catch { /* best-effort */ }
 }
 
 async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
@@ -2262,13 +2308,15 @@ async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
 
   // ── Pass 1: PID files left behind by previous pollers ─────────────────────
   //
-  // Any pid-file PID still alive that we don't own is an orphan from a
-  // previous poller (SIGKILL'd / OOM'd / crashed). Kill the whole process
-  // group — bash from run-ticket.sh is a session leader (see setsid trampoline
-  // in run-ticket.sh) so the negative-PID form reaches claude + descendants.
-  // Done-state gating was removed: orphans in any ticket state are reclaimed
-  // because their original poller no longer owns them and they accumulate
-  // forever otherwise (UP-789).
+  // Pre-SY-66 behavior was to SIGTERM every alive orphan PID. That destroyed
+  // working sessions whenever the user restarted the poller. We now *adopt*
+  // any alive orphan: the agent keeps running, its pid file stays, and the
+  // alive-pid short-circuit in `spawnAgent` prevents a duplicate spawn on the
+  // first poll cycle. Only truly dead pids get wiped — and for those we also
+  // delete the matching `.claude-session-id` + `~/.claude/projects/<dir>/<sid>.jsonl`
+  // so Claude Desktop doesn't accumulate stale remote-control entries when a
+  // fresh session is spawned.
+  const adoptedIdentifiers = new Set<string>();
   const files = fs.readdirSync(logsDir).filter((f) => f.startsWith('agent-pid-') && f.endsWith('.pid'));
   for (const file of files) {
     const match = file.match(/^agent-pid-([A-Z]+-\d+)\.pid$/i);
@@ -2276,26 +2324,25 @@ async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
     const identifier = match[1].toUpperCase();
     const filePath = path.join(logsDir, file);
     let pid: number;
-    try { pid = parseInt(fs.readFileSync(filePath, 'utf8').trim(), 10); } catch { fs.rmSync(filePath, { force: true }); continue; }
-    if (isNaN(pid)) { fs.rmSync(filePath, { force: true }); continue; }
-    if (!isPidAlive(pid)) { fs.rmSync(filePath, { force: true }); continue; }
+    try { pid = parseInt(fs.readFileSync(filePath, 'utf8').trim(), 10); } catch { fs.rmSync(filePath, { force: true }); wipeStaleClaudeSession(identifier); continue; }
+    if (isNaN(pid)) { fs.rmSync(filePath, { force: true }); wipeStaleClaudeSession(identifier); continue; }
+    if (!isPidAlive(pid)) { fs.rmSync(filePath, { force: true }); wipeStaleClaudeSession(identifier); continue; }
     if (runningAgents.has(identifier)) continue;
 
-    log(chalk.dim(`[${timestamp()}] ⏹ Killing orphan agent group for ${identifier} (PID ${pid})`));
-    try { process.kill(-pid, 'SIGTERM'); } catch {
-      try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
-    }
-    fs.rmSync(filePath, { force: true });
+    log(chalk.dim(`[${timestamp()}] ↩ Adopting orphan agent ${identifier} (PID ${pid}) — leaving its claude session intact`));
+    adoptedIdentifiers.add(identifier);
   }
 
   // ── Pass 2: rogue claude / node / bash by worktree-path match ─────────────
   //
   // If a poller crashed before writing the pid file, the pid-file pass misses
   // those PIDs. Walk every process on the system and match against the
-  // configured worktrees roots so
-  // we catch leftover `claude`, `python3 pty-wrapper.py`, `bash run-ticket.sh`,
-  // and nested tool subprocesses by their argv. Skip anything the live
-  // runningAgents map already manages (its descendants share the same path).
+  // configured worktrees roots so we catch leftover `claude`,
+  // `python3 pty-wrapper.py`, `bash run-ticket.sh`, and nested tool
+  // subprocesses by their argv. Skip anything the live `runningAgents` map
+  // already manages, and anything whose argv references a worktree that an
+  // *adopted* pid-file agent owns — its descendants share the same path and
+  // would otherwise be reaped by Pass 2.
   const rows = snapshotPsByCommand();
   const prefixes = boards
     .flatMap((b) => b.repos)
@@ -2305,12 +2352,12 @@ async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
   for (const { proc } of runningAgents.values()) {
     if (proc.pid !== undefined) skip.add(proc.pid);
   }
-  // Exclude every PID whose argv references a currently-tracked agent's
-  // worktree. The descendants of a live bash/python/claude tree share the
-  // worktree path with their ancestor, so a plain PID skip-set would still
-  // let Pass 2 reap them. Without this filter we'd kill the agent currently
-  // running this very session on the first poll cycle.
-  const liveTreePaths = liveAgentWorktreePaths();
+  // Worktree paths whose process trees must survive Pass 2 — both the
+  // poller-tracked agents and the adopted orphans from Pass 1.
+  const liveTreePaths = [
+    ...liveAgentWorktreePaths(),
+    ...[...adoptedIdentifiers].map((id) => findWorktreePathForIdentifier(id)).filter((p): p is string => p !== null),
+  ];
   const isUnderLiveAgent = (cmd: string): boolean =>
     liveTreePaths.some((p) => cmd.includes(p));
   const orphans = findOrphanPidsByWorktreePrefix(rows, prefixes, skip)
@@ -2326,11 +2373,15 @@ async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
 
   // ── Pass 3: nx daemons — always detached, never share a PGID ──────────────
   //
-  // Reuse the same ps snapshot. AC 2 requires explicit cleanup even when no
-  // poller-tracked agent matched, because nx daemons survive long past the
-  // node process that forked them. Scope to Symphony-managed paths so we
-  // don't reap an unrelated workspace's daemon that the developer also runs.
-  const nxPids = findNxDaemonPids(rows, symphonyManagedPathPrefixes());
+  // Reuse the same ps snapshot. nx daemons survive long past the node process
+  // that forked them, so explicit cleanup is the only way to stop stale ones.
+  // Skip daemons whose argv references an adopted (or tracked) worktree so we
+  // don't kill an nx daemon that an adopted agent is actively using.
+  const nxPids = findNxDaemonPids(rows, symphonyManagedPathPrefixes())
+    .filter((pid) => {
+      const row = rows.find((r) => r.pid === pid);
+      return !row || !isUnderLiveAgent(row.command);
+    });
   if (nxPids.length > 0) {
     log(chalk.dim(`[${timestamp()}] ⏹ Stopping ${nxPids.length} stale nx daemon(s)`));
     for (const pid of nxPids) {
@@ -2588,71 +2639,22 @@ async function poll(): Promise<void> {
 
 // ── Shutdown ──────────────────────────────────────────────────────────────────
 
-process.on('SIGINT', async () => {
+process.on('SIGINT', () => {
   isShuttingDown = true;
   const total = runningAgents.size;
-  log('\n' + chalk.yellow(`[symphony] Shutting down — interrupting ${total} running agent(s)...`));
-
-  if (REMOTE_CONTROL) {
-    await Promise.all([...runningAgents.entries()].map(async ([identifier, agent]) => {
-      const sessionFile = path.join(agent.worktreePath, '.claude-session-id');
-      if (!fs.existsSync(sessionFile)) return;
-      const sessionId = fs.readFileSync(sessionFile, 'utf8').trim();
-      if (!sessionId) return;
-      try {
-        await new Promise<void>((resolve) => {
-          const stop = child_process.spawn('claude', ['--dangerously-skip-permissions', '--resume', sessionId, '--print', 'STOP. The Symphony poller has shut down. Save your work to the workpad and exit immediately.'], { stdio: 'ignore' });
-          stop.on('exit', () => resolve());
-          setTimeout(() => { stop.kill(); resolve(); }, 10_000);
-        });
-      } catch { /* best-effort */ }
-    }));
-  }
-
-  const pidKills: Promise<void>[] = [];
-  for (const { proc } of runningAgents.values()) {
-    if (proc.pid === undefined) continue;
-    // run-ticket.sh re-execs through setsid, so proc.pid is the PGID leader.
-    // Signalling the negative PID hits every descendant — claude, MCP servers,
-    // nested shells — instead of just the bash, which used to die fast and
-    // leave its children for launchd to adopt.
-    try { process.kill(-proc.pid, 'SIGTERM'); }
-    catch { try { proc.kill('SIGTERM'); } catch { /* already gone */ } }
-    pidKills.push(new Promise<void>((resolve) => proc.on('exit', () => resolve())));
-  }
-
-  const logsDir = path.join(SYMPHONY_ROOT, 'logs');
-  const trackedPids = new Set([...runningAgents.values()].map(({ proc }) => proc.pid).filter(Boolean));
-  if (fs.existsSync(logsDir)) {
-    for (const file of fs.readdirSync(logsDir)) {
-      if (!file.startsWith('agent-pid-') || !file.endsWith('.pid')) continue;
-      const filePath = path.join(logsDir, file);
-      const pid = parseInt(fs.readFileSync(filePath, 'utf8').trim(), 10);
-      if (!isNaN(pid) && !trackedPids.has(pid) && isPidAlive(pid)) {
-        try { process.kill(-pid, 'SIGTERM'); } catch {
-          try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
-        }
-      }
-      fs.rmSync(filePath, { force: true });
-    }
-  }
-
-  // Best-effort sweep of nx daemons spawned by any agent — they detach into
-  // their own session, so the PGID kill above does not reach them.
-  killOrphanedNxDaemons();
-
-  // Wait up to 5s for children to exit cleanly, then escalate to SIGKILL on
-  // the same PGIDs. 100ms (the previous value) was nowhere near enough for
-  // claude to flush MCP state, leaving zombies on every SIGINT.
-  await Promise.race([
-    Promise.all(pidKills),
-    sleep(5000),
-  ]);
-  for (const { proc } of runningAgents.values()) {
-    if (proc.pid === undefined) continue;
-    try { process.kill(-proc.pid, 'SIGKILL'); } catch { /* already gone */ }
-  }
-
+  // Non-destructive shutdown (SY-66): the poller detaches from the agents it
+  // spawned and exits. `run-ticket.sh` re-execs through `setsid` so its bash /
+  // pty-wrapper.py / claude tree sits in its own session+PGID and survives
+  // the poller exiting without inheriting SIGHUP. The previous shutdown
+  // broadcast a `STOP. Save your work and exit immediately.` prompt via
+  // `claude --resume --print` and then SIGTERM/SIGKILL'd the PGID — which
+  // killed working sessions mid-conversation and made Claude Desktop lose
+  // the remote-control entry. We now leave running agents alone; the next
+  // poller startup adopts them via their `agent-pid-*.pid` handles in
+  // cleanupOrphanedAgentsByPidFiles(). `agent-pid-*.pid` files are NOT
+  // removed here — they are the only handle the next poller has to recognize
+  // survivors.
+  log('\n' + chalk.yellow(`[symphony] Shutting down — leaving ${total} running agent(s) attached to their existing claude sessions.`));
   console.log(chalk.yellow('[symphony] Stopped.'));
   process.exit(0);
 });

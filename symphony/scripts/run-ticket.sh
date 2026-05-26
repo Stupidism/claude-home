@@ -157,6 +157,18 @@ fetch_or_diagnose "$DEFAULT_BRANCH"
 
 if [ "$FRESH" = "--fresh" ]; then
   if [ -d "$WORKTREE_PATH" ]; then
+    # SY-66: clear the previous claude session jsonl too, otherwise Claude
+    # Desktop accumulates a stale remote-control entry alongside the fresh
+    # one the new run is about to register.
+    PREV_SID_FILE="$WORKTREE_PATH/.claude-session-id"
+    if [ -f "$PREV_SID_FILE" ]; then
+      PREV_SID="$(cat "$PREV_SID_FILE" 2>/dev/null || true)"
+      PREV_PROJECT_DIR="${HOME}/.claude/projects/$(echo "$WORKTREE_PATH" | tr '/' '-')"
+      if [ -n "$PREV_SID" ] && [ -f "${PREV_PROJECT_DIR}/${PREV_SID}.jsonl" ]; then
+        rm -f "${PREV_PROJECT_DIR}/${PREV_SID}.jsonl"
+        echo "[run] Wiped stale claude session jsonl ${PREV_SID:0:8}…"
+      fi
+    fi
     rm -f "$WORKTREE_PATH/.claude-session-id"
     git worktree remove --force "$WORKTREE_PATH"
     echo "[run] Removed old worktree for fresh start."
