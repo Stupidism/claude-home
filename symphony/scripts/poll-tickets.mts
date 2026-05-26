@@ -2496,6 +2496,12 @@ async function poll(): Promise<void> {
   const allBlocked: { ticket: Issue; board: BoardConfig }[] = [];
   const allSnapshot: DashboardRow[] = [];
   const allActiveIdentifiers = new Set<string>();
+  // Identifiers whose agent should still be running (InProgress + Merging),
+  // aggregated across every board this poll cycle. Used after the board loop
+  // to sweep adopted-orphan agents whose tickets are no longer in any active
+  // state — even when the ticket disappeared from this board's queried states
+  // entirely (e.g. moved to Done / Backlog / dropped from the board).
+  const allInProgressOrMergingIds = new Set<string>();
 
   for (const board of boards) {
     let todoTickets: Issue[], inProgressTickets: Issue[], humanReviewTickets: Issue[], mergingTickets: Issue[], reworkTickets: Issue[], cancelledTickets: Issue[];
@@ -2528,6 +2534,9 @@ async function poll(): Promise<void> {
     for (const t of [...todoTickets, ...inProgressTickets, ...humanReviewTickets, ...mergingTickets, ...reworkTickets]) {
       allActiveIdentifiers.add(t.identifier);
     }
+    for (const t of [...inProgressTickets, ...mergingTickets]) {
+      allInProgressOrMergingIds.add(t.identifier);
+    }
 
     // Kill agents whose tickets moved out of active states
     const SETTLE_MS = 30_000;
@@ -2542,26 +2551,6 @@ async function poll(): Promise<void> {
         agent.proc.kill('SIGTERM');
       }
     }
-    // Adopted-orphan agents (SY-66): no proc handle, so route through
-    // killAgent which signals the pid group directly. Without this, a ticket
-    // moved to Rework / Cancelled while the adopted agent is still alive
-    // would defer forever — isAgentRunning stays true and the rework /
-    // cancelled handler never gets to fire.
-    const adoptedInBoard = [...adoptedAgents.keys()].filter((id) => {
-      // Only sweep tickets we actually saw on this board's poll, so a stray
-      // adopted PID for an unrelated board doesn't get reaped here.
-      return [...todoTickets, ...inProgressTickets, ...humanReviewTickets, ...mergingTickets, ...reworkTickets, ...cancelledTickets]
-        .some((t) => t.identifier === id);
-    });
-    for (const identifier of adoptedInBoard) {
-      if (!activeInBoard.has(identifier)) {
-        log(chalk.dim(`[${timestamp()}] ⏹ ${identifier} no longer active (adopted) — stopping agent`));
-        // Fire-and-forget — the next cleanupOrphanedAgentsByPidFiles cycle
-        // will drop the entry once the PID dies.
-        void killAgent(identifier);
-      }
-    }
-
     // All per-state ticket handling lives in state-machine.mts. We just build a
     // deps object that wraps the poller's I/O + introspection and let
     // processTicket() decide what side effect to run.
@@ -2683,6 +2672,22 @@ async function poll(): Promise<void> {
     }
 
     await cleanupDoneWorktrees(allActiveIdentifiers, board);
+  }
+
+  // Global adopted-orphan sweep (SY-66): any adopted agent whose ticket is
+  // not in InProgress / Merging across *any* board should be terminated.
+  // Done so even tickets that left the queried state windows (Done /
+  // Backlog / dropped) eventually release their concurrency slot. Skipped
+  // when no boards reported successfully this cycle so a transient API
+  // failure doesn't wipe the whole board.
+  const anyBoardReported = allActiveIdentifiers.size > 0 || allInProgressOrMergingIds.size > 0;
+  if (anyBoardReported) {
+    for (const identifier of [...adoptedAgents.keys()]) {
+      if (!allInProgressOrMergingIds.has(identifier)) {
+        log(chalk.dim(`[${timestamp()}] ⏹ ${identifier} no longer active (adopted) — stopping agent`));
+        void killAgent(identifier);
+      }
+    }
   }
 
   lastSnapshot = allSnapshot;
