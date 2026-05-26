@@ -2407,17 +2407,21 @@ async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
     // wrapper for *this* ticket before adopting. Without this, a pid file
     // whose original bash exited and whose PID got recycled by the OS to an
     // unrelated process would falsely consume a concurrency slot until the
-    // imposter exits.
-    const cmd = psByPid.get(pid) ?? '';
-    // Require `run-ticket.sh <identifier>` with a trailing space so the
-    // ticket id can't accidentally match inside another ticket's title /
-    // description arg.
-    const expectedMarker = new RegExp(`\\brun-ticket\\.sh\\s+${identifier}\\s`);
-    if (!expectedMarker.test(cmd)) {
-      log(chalk.dim(`[${timestamp()}] ⏹ pid file for ${identifier} (PID ${pid}) doesn't match run-ticket.sh — treating as dead`));
-      fs.rmSync(filePath, { force: true });
-      wipeStaleClaudeSession(identifier, recordedWorktree);
-      continue;
+    // imposter exits. Skipped entirely when the ps snapshot itself failed
+    // (psRows empty) — in that degraded mode we'd misclassify every alive
+    // session as a mismatch and destructively wipe its claude history.
+    if (psRows.length > 0) {
+      const cmd = psByPid.get(pid) ?? '';
+      // Require `run-ticket.sh <identifier>` with a trailing space so the
+      // ticket id can't accidentally match inside another ticket's title /
+      // description arg.
+      const expectedMarker = new RegExp(`\\brun-ticket\\.sh\\s+${identifier}\\s`);
+      if (!expectedMarker.test(cmd)) {
+        log(chalk.dim(`[${timestamp()}] ⏹ pid file for ${identifier} (PID ${pid}) doesn't match run-ticket.sh — treating as dead`));
+        fs.rmSync(filePath, { force: true });
+        wipeStaleClaudeSession(identifier, recordedWorktree);
+        continue;
+      }
     }
 
     const worktreePath = recordedWorktree ?? findWorktreePathForIdentifier(identifier);
