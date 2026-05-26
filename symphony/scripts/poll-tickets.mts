@@ -1268,6 +1268,32 @@ async function killAgent(identifier: string): Promise<void> {
   const upper = identifier.toUpperCase();
   const agent = runningAgents.get(upper);
   if (!agent) {
+    // Adopted-orphan path (SY-66): no child_process handle, so signal the
+    // pid group directly. Best-effort — escalation to SIGKILL after a short
+    // grace lets nested claude / pty-wrapper / nx daemons flush state.
+    const adopted = adoptedAgents.get(upper);
+    if (adopted && isPidAlive(adopted.pid)) {
+      log(chalk.yellow(`[${timestamp()}] ✋ Stopping adopted agent ${chalk.bold(upper)} (PID ${adopted.pid})`));
+      try { process.kill(-adopted.pid, 'SIGTERM'); } catch {
+        try { process.kill(adopted.pid, 'SIGTERM'); } catch { /* gone */ }
+      }
+      // Give the tree ~2s to exit cleanly; the next poll cycle will rebuild
+      // adoptedAgents from the pid files (so this entry drops out on its own
+      // once the PID dies).
+      for (let i = 0; i < 4; i++) {
+        await sleep(500);
+        if (!isPidAlive(adopted.pid)) break;
+      }
+      if (isPidAlive(adopted.pid)) {
+        try { process.kill(-adopted.pid, 'SIGKILL'); } catch {
+          try { process.kill(adopted.pid, 'SIGKILL'); } catch { /* gone */ }
+        }
+      }
+      adoptedAgents.delete(upper);
+      const pidFile = path.join(SYMPHONY_ROOT, 'logs', `agent-pid-${upper}.pid`);
+      fs.rmSync(pidFile, { force: true });
+      return;
+    }
     log(chalk.yellow(`[${timestamp()}] ⏭ No running agent for ${upper}`));
     return;
   }
@@ -2514,6 +2540,25 @@ async function poll(): Promise<void> {
       if (!activeInBoard.has(identifier)) {
         log(chalk.dim(`[${timestamp()}] ⏹ ${identifier} no longer active — stopping agent`));
         agent.proc.kill('SIGTERM');
+      }
+    }
+    // Adopted-orphan agents (SY-66): no proc handle, so route through
+    // killAgent which signals the pid group directly. Without this, a ticket
+    // moved to Rework / Cancelled while the adopted agent is still alive
+    // would defer forever — isAgentRunning stays true and the rework /
+    // cancelled handler never gets to fire.
+    const adoptedInBoard = [...adoptedAgents.keys()].filter((id) => {
+      // Only sweep tickets we actually saw on this board's poll, so a stray
+      // adopted PID for an unrelated board doesn't get reaped here.
+      return [...todoTickets, ...inProgressTickets, ...humanReviewTickets, ...mergingTickets, ...reworkTickets, ...cancelledTickets]
+        .some((t) => t.identifier === id);
+    });
+    for (const identifier of adoptedInBoard) {
+      if (!activeInBoard.has(identifier)) {
+        log(chalk.dim(`[${timestamp()}] ⏹ ${identifier} no longer active (adopted) — stopping agent`));
+        // Fire-and-forget — the next cleanupOrphanedAgentsByPidFiles cycle
+        // will drop the entry once the PID dies.
+        void killAgent(identifier);
       }
     }
 
