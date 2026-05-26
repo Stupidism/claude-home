@@ -1346,7 +1346,10 @@ async function killAgent(identifier: string): Promise<void> {
  */
 async function restartAgent(identifier: string): Promise<void> {
   const upper = identifier.toUpperCase();
-  if (runningAgents.has(upper)) {
+  // SY-66: include adopted-orphan sessions — without this, `restart <id>` on
+  // an adopted session would skip the kill and forceResumeTicket → spawnAgent
+  // would see the survivor pid file and short-circuit, making restart a no-op.
+  if (isAgentActive(upper)) {
     await killAgent(upper);
   }
   await forceResumeTicket(upper);
@@ -1675,7 +1678,11 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
     { stdio, env, detached: false }
   );
 
-  if (child.pid !== undefined) fs.writeFileSync(activePidFile, String(child.pid));
+  // SY-66: pid file content is `<pid>\n<worktree>` so the next poller can
+  // pick up the exact worktree this agent was spawned into when adopting,
+  // even if findWorktreePathForIdentifier would return a stale leftover dir.
+  // Readers handle a single-line legacy file too.
+  if (child.pid !== undefined) fs.writeFileSync(activePidFile, `${child.pid}\n${worktreePath}\n`);
 
   runningAgents.set(ticket.identifier, {
     proc: child,
@@ -2323,8 +2330,12 @@ function findWorktreePathForIdentifier(identifier: string): string | null {
  * pointer + jsonl intact so their conversation history survives across
  * poller restarts.
  */
-function wipeStaleClaudeSession(identifier: string): void {
-  const worktreePath = findWorktreePathForIdentifier(identifier);
+function wipeStaleClaudeSession(identifier: string, recordedWorktree: string | null = null): void {
+  // Prefer the worktree path captured at spawn time (SY-66): the pid file
+  // records it explicitly, so we don't ambiguously match the first
+  // `feat-<id>-*` directory on disk when stale leftovers from a previous
+  // title/slug exist.
+  const worktreePath = recordedWorktree ?? findWorktreePathForIdentifier(identifier);
   if (!worktreePath) return;
   const pointerFile = path.join(worktreePath, '.claude-session-id');
   let sessionId: string | null = null;
@@ -2377,10 +2388,19 @@ async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
     if (!match) continue;
     const identifier = match[1].toUpperCase();
     const filePath = path.join(logsDir, file);
+    // Pid file is `<pid>\n<worktree>\n` (SY-66) — fall back to a single-line
+    // legacy file (pid only) by leaving recordedWorktree null and letting
+    // findWorktreePathForIdentifier guess from disk.
     let pid: number;
-    try { pid = parseInt(fs.readFileSync(filePath, 'utf8').trim(), 10); } catch { fs.rmSync(filePath, { force: true }); wipeStaleClaudeSession(identifier); continue; }
+    let recordedWorktree: string | null = null;
+    try {
+      const contents = fs.readFileSync(filePath, 'utf8').split('\n');
+      pid = parseInt(contents[0]?.trim() ?? '', 10);
+      const wt = contents[1]?.trim();
+      if (wt) recordedWorktree = wt;
+    } catch { fs.rmSync(filePath, { force: true }); wipeStaleClaudeSession(identifier); continue; }
     if (isNaN(pid)) { fs.rmSync(filePath, { force: true }); wipeStaleClaudeSession(identifier); continue; }
-    if (!isPidAlive(pid)) { fs.rmSync(filePath, { force: true }); wipeStaleClaudeSession(identifier); continue; }
+    if (!isPidAlive(pid)) { fs.rmSync(filePath, { force: true }); wipeStaleClaudeSession(identifier, recordedWorktree); continue; }
     if (runningAgents.has(identifier)) continue;
 
     // PID reuse guard: confirm the live process is actually the run-ticket.sh
@@ -2396,11 +2416,11 @@ async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
     if (!expectedMarker.test(cmd)) {
       log(chalk.dim(`[${timestamp()}] ⏹ pid file for ${identifier} (PID ${pid}) doesn't match run-ticket.sh — treating as dead`));
       fs.rmSync(filePath, { force: true });
-      wipeStaleClaudeSession(identifier);
+      wipeStaleClaudeSession(identifier, recordedWorktree);
       continue;
     }
 
-    const worktreePath = findWorktreePathForIdentifier(identifier);
+    const worktreePath = recordedWorktree ?? findWorktreePathForIdentifier(identifier);
     adoptedAgents.set(identifier, { pid, worktreePath });
     log(chalk.dim(`[${timestamp()}] ↩ Adopting orphan agent ${identifier} (PID ${pid}) — leaving its claude session intact`));
   }
@@ -2502,12 +2522,11 @@ async function poll(): Promise<void> {
   // state — even when the ticket disappeared from this board's queried states
   // entirely (e.g. moved to Done / Backlog / dropped from the board).
   const allInProgressOrMergingIds = new Set<string>();
-  // Set to true once at least one board's ticket fetch completes without
-  // throwing — regardless of whether that board currently has any tickets.
-  // The adopted-agent sweep below keys off this so an empty-but-healthy
-  // board still releases stale adopted slots; using `allActiveIdentifiers.size`
-  // would silently skip the sweep whenever every ticket happens to be Done.
-  let anyBoardFetched = false;
+  // Ticket prefixes for boards whose ticket fetch completed without throwing
+  // this cycle. The adopted-agent sweep is scoped to identifiers belonging
+  // to these boards so a transient failure on board B doesn't kill adopted
+  // agents owned by board B just because board A reported no active work.
+  const fetchedBoardPrefixes = new Set<string>();
 
   for (const board of boards) {
     let todoTickets: Issue[], inProgressTickets: Issue[], humanReviewTickets: Issue[], mergingTickets: Issue[], reworkTickets: Issue[], cancelledTickets: Issue[];
@@ -2537,7 +2556,7 @@ async function poll(): Promise<void> {
       continue;
     }
 
-    anyBoardFetched = true;
+    fetchedBoardPrefixes.add(board.ticketPrefix.toUpperCase());
     for (const t of [...todoTickets, ...inProgressTickets, ...humanReviewTickets, ...mergingTickets, ...reworkTickets]) {
       allActiveIdentifiers.add(t.identifier);
     }
@@ -2687,8 +2706,14 @@ async function poll(): Promise<void> {
   // Backlog / dropped) eventually release their concurrency slot. Skipped
   // when no boards reported successfully this cycle so a transient API
   // failure doesn't wipe the whole board.
-  if (anyBoardFetched) {
+  if (fetchedBoardPrefixes.size > 0) {
     for (const identifier of [...adoptedAgents.keys()]) {
+      const prefix = identifier.split('-')[0]?.toUpperCase() ?? '';
+      // Skip identifiers owned by a board that didn't fetch successfully
+      // this cycle — `allInProgressOrMergingIds` would be empty for that
+      // board, so the sweep would otherwise mistake transient API failure
+      // for "ticket no longer active" and kill a live session.
+      if (!fetchedBoardPrefixes.has(prefix)) continue;
       if (!allInProgressOrMergingIds.has(identifier)) {
         log(chalk.dim(`[${timestamp()}] ⏹ ${identifier} no longer active (adopted) — stopping agent`));
         void killAgent(identifier);
@@ -2822,7 +2847,11 @@ while (true) {
         { cwd: worktreePath, stdio: ['ignore', logFd, logFd], detached: false }
       );
 
-      if (child.pid !== undefined) fs.writeFileSync(activePidFile, String(child.pid));
+      // SY-66: pid file content is `<pid>\n<worktree>` so the next poller can
+  // pick up the exact worktree this agent was spawned into when adopting,
+  // even if findWorktreePathForIdentifier would return a stale leftover dir.
+  // Readers handle a single-line legacy file too.
+  if (child.pid !== undefined) fs.writeFileSync(activePidFile, `${child.pid}\n${worktreePath}\n`);
 
       runningAgents.set(pausedTicket.identifier, {
         proc: child,
