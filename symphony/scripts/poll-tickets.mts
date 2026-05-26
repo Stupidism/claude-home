@@ -2340,6 +2340,11 @@ async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
   // out automatically — keeps MAX_CONCURRENT slot accounting honest without a
   // separate exit handler we can't attach to a process we don't own.
   adoptedAgents.clear();
+  // Snapshot ps once so we can verify each adopted PID's identity (PID reuse
+  // can hand an unrelated process the slot otherwise — a stale pid file plus
+  // a wrapping pid counter equals a false adoption).
+  const psRows = snapshotPsByCommand();
+  const psByPid = new Map(psRows.map((r) => [r.pid, r.command]));
   const files = fs.readdirSync(logsDir).filter((f) => f.startsWith('agent-pid-') && f.endsWith('.pid'));
   for (const file of files) {
     const match = file.match(/^agent-pid-([A-Z]+-\d+)\.pid$/i);
@@ -2351,6 +2356,23 @@ async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
     if (isNaN(pid)) { fs.rmSync(filePath, { force: true }); wipeStaleClaudeSession(identifier); continue; }
     if (!isPidAlive(pid)) { fs.rmSync(filePath, { force: true }); wipeStaleClaudeSession(identifier); continue; }
     if (runningAgents.has(identifier)) continue;
+
+    // PID reuse guard: confirm the live process is actually the run-ticket.sh
+    // wrapper for *this* ticket before adopting. Without this, a pid file
+    // whose original bash exited and whose PID got recycled by the OS to an
+    // unrelated process would falsely consume a concurrency slot until the
+    // imposter exits.
+    const cmd = psByPid.get(pid) ?? '';
+    // Require `run-ticket.sh <identifier>` with a trailing space so the
+    // ticket id can't accidentally match inside another ticket's title /
+    // description arg.
+    const expectedMarker = new RegExp(`\\brun-ticket\\.sh\\s+${identifier}\\s`);
+    if (!expectedMarker.test(cmd)) {
+      log(chalk.dim(`[${timestamp()}] ⏹ pid file for ${identifier} (PID ${pid}) doesn't match run-ticket.sh — treating as dead`));
+      fs.rmSync(filePath, { force: true });
+      wipeStaleClaudeSession(identifier);
+      continue;
+    }
 
     const worktreePath = findWorktreePathForIdentifier(identifier);
     adoptedAgents.set(identifier, { pid, worktreePath });
@@ -2367,7 +2389,7 @@ async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
   // already manages, and anything whose argv references a worktree that an
   // *adopted* pid-file agent owns — its descendants share the same path and
   // would otherwise be reaped by Pass 2.
-  const rows = snapshotPsByCommand();
+  const rows = psRows;
   const prefixes = boards
     .flatMap((b) => b.repos)
     .map((repo) => repo.worktreesDir.replace(/^~/, process.env['HOME'] ?? '~'))
