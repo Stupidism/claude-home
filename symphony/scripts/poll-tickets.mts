@@ -854,6 +854,13 @@ function worktreeOccupiedBy(issue: Issue, board: BoardConfig): string | null {
     if (otherId === issue.identifier) continue;
     if (other.worktreePath === worktreePath) return otherId;
   }
+  // SY-66: adopted-orphan sessions still own their worktree across poller
+  // restarts. Without this, a second ticket would treat the worktree as free
+  // and spawn into it, racing against the adopted agent's git operations.
+  for (const [otherId, other] of adoptedAgents) {
+    if (otherId === issue.identifier) continue;
+    if (other.worktreePath && other.worktreePath === worktreePath) return otherId;
+  }
   return null;
 }
 
