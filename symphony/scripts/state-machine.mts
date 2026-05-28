@@ -132,9 +132,14 @@ export interface Deps<Board extends BoardRef = BoardRef> {
   /**
    * Read the `symphony/ai-reviewed` commit status on a specific SHA. Returns
    * the GitHub status state (`'success'` / `'pending'` / `'error'` /
-   * `'failure'`) or null when no such status exists for that SHA.
+   * `'failure'`); `null` when the gh call succeeded but no such status exists
+   * (genuine first-time — caller may write `pending`); `'unknown'` when the
+   * gh call itself failed (network blip, non-zero exit, unparseable JSON,
+   * malformed PR URL) — caller MUST skip this cycle, not treat as first-time
+   * (UP-830: returning null on transient failures retriggered Codex review on
+   * every gh blip).
    */
-  getAiReviewStatus(prUrl: string, sha: string): Promise<'success' | 'pending' | 'error' | 'failure' | null>;
+  getAiReviewStatus(prUrl: string, sha: string): Promise<'success' | 'pending' | 'error' | 'failure' | 'unknown' | null>;
   /**
    * Write the `symphony/ai-reviewed` commit status on `sha`. Used to mark a
    * fresh AI-review request as `pending` and to flip it to `success` once an
@@ -352,8 +357,14 @@ async function ensureAiReviewForCurrentHead<B extends BoardRef>(
   let sha: string | null = null;
   try { sha = await deps.getPRHeadSha(prUrl); } catch { return; }
   if (!sha) return;
-  let status: 'success' | 'pending' | 'error' | 'failure' | null = null;
+  let status: 'success' | 'pending' | 'error' | 'failure' | 'unknown' | null = null;
   try { status = await deps.getAiReviewStatus(prUrl, sha); } catch { return; }
+  // UP-830: 'unknown' means the gh call failed — we can't tell whether a
+  // status already exists. Skip; the next cycle retries. Falling through to
+  // the null branch would re-post `pending` and re-spawn the AI trigger on
+  // every transient gh failure, causing duplicate Codex reviews on the same
+  // unchanged commit.
+  if (status === 'unknown') return;
   if (status === null) {
     // Repos with AI review disabled (`codeReviewComment` empty in resolved
     // config) must NOT receive a `pending` marker — no review can ever

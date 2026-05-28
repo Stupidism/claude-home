@@ -473,6 +473,25 @@ for (const board of boards) {
     assert.deepEqual(order, []);
   });
 
+  test(`[${board.name}] inProgress with PR + getAiReviewStatus returns 'unknown' → skip cycle (no write, no spawn)`, async () => {
+    // UP-830 regression guard: a transient gh API failure must NOT fall
+    // through to the first-time branch. Otherwise every network blip re-posts
+    // `pending` and re-spawns the AI review trigger, causing duplicate Codex
+    // review comments on the same unchanged commit.
+    const ticket = stubTicket(board.ticketPrefix, 217, 'inProgress', board);
+    const order: string[] = [];
+    const { deps } = makeDeps({
+      isAgentRunning: () => true,
+      getOpenPRUrl: async () => 'https://github.com/x/y/pull/217',
+      getPRHeadSha: async () => 'sha217',
+      getAiReviewStatus: async () => 'unknown',
+      postAiReviewStatus: async (_url, _sha, state) => { order.push(`postAiReviewStatus:${state}`); },
+      spawnAIReview: () => { order.push('spawnAIReview'); return true; },
+    });
+    await processTicket('inProgress', ticket, board, deps);
+    assert.deepEqual(order, []);
+  });
+
   test(`[${board.name}] inProgress with PR + failed pending write → no spawn (avoids duplicate triggers)`, async () => {
     const ticket = stubTicket(board.ticketPrefix, 216, 'inProgress', board);
     const order: string[] = [];

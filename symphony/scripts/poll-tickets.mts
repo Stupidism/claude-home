@@ -1970,10 +1970,18 @@ function getPRHeadSha(prUrl: string): Promise<string | null> {
   });
 }
 
-function getAiReviewStatus(prUrl: string, sha: string): Promise<'success' | 'pending' | 'error' | 'failure' | null> {
+// UP-830: distinguish "gh API failed" from "status genuinely absent". Returning
+// null on a transient gh failure made ensureAiReviewForCurrentHead treat every
+// network blip as a first-time review and re-post a `pending` status + re-spawn
+// the AI review trigger — causing duplicate Codex review comments on the same
+// unchanged commit. Now: null ONLY means the gh call succeeded and no
+// `symphony/ai-reviewed` context was found; 'unknown' means we couldn't tell
+// (spawn error, non-zero exit, unparseable JSON, malformed PR URL) and the
+// caller MUST skip the cycle rather than fall through to the first-time branch.
+function getAiReviewStatus(prUrl: string, sha: string): Promise<'success' | 'pending' | 'error' | 'failure' | 'unknown' | null> {
   const ref = parsePrRef(prUrl);
-  if (!ref) return Promise.resolve(null);
-  return new Promise<'success' | 'pending' | 'error' | 'failure' | null>((resolve) => {
+  if (!ref) return Promise.resolve('unknown');
+  return new Promise<'success' | 'pending' | 'error' | 'failure' | 'unknown' | null>((resolve) => {
     const child = child_process.spawn(
       'gh',
       ['api', `repos/${ref.repo}/commits/${sha}/statuses`],
@@ -1981,9 +1989,9 @@ function getAiReviewStatus(prUrl: string, sha: string): Promise<'success' | 'pen
     );
     let output = '';
     child.stdout?.on('data', (d: Buffer) => (output += d.toString()));
-    child.on('error', () => resolve(null));
+    child.on('error', () => resolve('unknown'));
     child.on('exit', (code) => {
-      if (code !== 0) return resolve(null);
+      if (code !== 0) return resolve('unknown');
       try {
         const data = JSON.parse(output) as Array<{ context: string; state: string }>;
         // Statuses are returned newest-first; the first match is authoritative.
@@ -1994,7 +2002,7 @@ function getAiReviewStatus(prUrl: string, sha: string): Promise<'success' | 'pen
         }
         resolve(null);
       } catch {
-        resolve(null);
+        resolve('unknown');
       }
     });
   });
