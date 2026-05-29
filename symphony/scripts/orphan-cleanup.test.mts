@@ -16,6 +16,7 @@ import {
   parsePsOutput,
   findOrphanPidsByWorktreePrefix,
   findNxDaemonPids,
+  findDeadAgentIdentifiers,
 } from './orphan-cleanup.mts';
 
 // ── parsePsOutput ────────────────────────────────────────────────────────────
@@ -135,4 +136,35 @@ test('findNxDaemonPids ignores plain "daemon" or unrelated nx subcommands', () =
     { pid: 502, command: 'launchd' },
   ];
   assert.deepEqual(findNxDaemonPids(rows, []), []);
+});
+
+// ── findDeadAgentIdentifiers (UP-826) ─────────────────────────────────────────
+
+test('findDeadAgentIdentifiers prunes entries whose PID is gone', () => {
+  const alive = new Set([100]);
+  const agents = [
+    { identifier: 'UP-799', pid: 999 },   // dead — leaked after SIGKILL
+    { identifier: 'UP-100', pid: 100 },   // still running
+    { identifier: 'UP-816', pid: 888 },   // dead
+  ];
+  assert.deepEqual(
+    findDeadAgentIdentifiers(agents, (pid) => alive.has(pid)),
+    ['UP-799', 'UP-816'],
+  );
+});
+
+test('findDeadAgentIdentifiers keeps every live entry', () => {
+  const agents = [
+    { identifier: 'UP-1', pid: 10 },
+    { identifier: 'UP-2', pid: 20 },
+  ];
+  assert.deepEqual(findDeadAgentIdentifiers(agents, () => true), []);
+});
+
+test('findDeadAgentIdentifiers skips entries with no pid (owned by spawn error handler)', () => {
+  const agents = [
+    { identifier: 'UP-1', pid: undefined },  // spawn produced no pid
+    { identifier: 'UP-2', pid: 20 },         // dead
+  ];
+  assert.deepEqual(findDeadAgentIdentifiers(agents, () => false), ['UP-2']);
 });
