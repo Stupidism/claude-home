@@ -86,3 +86,26 @@ export function findNxDaemonPids(
     )
     .map(({ pid }) => pid);
 }
+
+/**
+ * Identify tracked agents whose child process has already died but whose
+ * `exit` handler never fired (e.g. a PTY-wrapper edge case after SIGKILL,
+ * UP-826). Such a "phantom" entry otherwise lingers in the runningAgents map
+ * forever — it counts against MAX_CONCURRENT (starving Todo claims) and makes
+ * the active-state sweep SIGTERM an already-dead PID every poll cycle.
+ *
+ * Returns the identifiers that should be pruned. Entries whose pid is
+ * `undefined` (spawn produced no pid) are skipped — the spawn 'error' handler
+ * owns those.
+ */
+export function findDeadAgentIdentifiers(
+  agents: Array<{ identifier: string; pid: number | undefined }>,
+  isAlive: (pid: number) => boolean,
+): string[] {
+  const dead: string[] = [];
+  for (const { identifier, pid } of agents) {
+    if (pid === undefined) continue;
+    if (!isAlive(pid)) dead.push(identifier);
+  }
+  return dead;
+}

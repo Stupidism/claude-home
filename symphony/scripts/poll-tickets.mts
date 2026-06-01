@@ -34,6 +34,7 @@ import {
   snapshotPsByCommand,
   findOrphanPidsByWorktreePrefix,
   findNxDaemonPids,
+  findDeadAgentIdentifiers,
 } from './orphan-cleanup.mts';
 import type {
   BoardGithubProjectsConfig,
@@ -2221,6 +2222,30 @@ async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
 // ── Main poll loop ────────────────────────────────────────────────────────────
 
 async function poll(): Promise<void> {
+  // Reap phantom runningAgents entries whose child already died but whose
+  // `exit` handler never fired (PTY-wrapper edge case after SIGKILL, UP-826).
+  // Left in place, a dead entry counts against MAX_CONCURRENT forever (starving
+  // Todo claims) and makes the active-state sweep below SIGTERM a dead PID every
+  // cycle. Polls are seconds apart, so if `exit` had a chance to fire it already
+  // did — a still-tracked entry whose PID is gone is genuinely a leak.
+  //
+  // This MUST run before cleanupOrphanedAgentsByPidFiles(): that sweep skips any
+  // process whose argv references a still-tracked agent's worktree (so it won't
+  // kill the live tree). A SIGKILL'd agent can leave Claude/Codex descendants
+  // alive in its worktree; pruning the map entry first un-protects them, so the
+  // sweep's worktree-match pass reaps those descendants in THIS poll — before
+  // the freed slot lets another ticket spawn a second agent into the same
+  // worktree.
+  const deadIds = findDeadAgentIdentifiers(
+    [...runningAgents].map(([identifier, agent]) => ({ identifier, pid: agent.proc.pid })),
+    isPidAlive,
+  );
+  for (const identifier of deadIds) {
+    runningAgents.delete(identifier);
+    fs.rmSync(path.join(SYMPHONY_ROOT, 'logs', `agent-pid-${identifier}.pid`), { force: true });
+    log(chalk.dim(`[${timestamp()}] 🧹 ${identifier} agent process gone — pruned phantom entry (UP-826)`));
+  }
+
   await cleanupOrphanedAgentsByPidFiles();
 
   const allEligible: { ticket: Issue; board: BoardConfig }[] = [];
