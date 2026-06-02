@@ -2309,6 +2309,7 @@ async function poll(): Promise<void> {
       moveToTodo,
       moveToDone,
       spawnAgent,
+      killAgent,
       resetReworkTicket,
       removeWorktree,
       cleanupCancelledTicket,

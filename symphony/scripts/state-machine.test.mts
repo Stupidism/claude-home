@@ -84,6 +84,7 @@ function makeDeps(overrides: Partial<Deps<BoardRef>> = {}): { deps: Deps<BoardRe
     moveToTodo: recordAsync('moveToTodo', undefined),
     moveToDone: recordAsync('moveToDone', undefined),
     spawnAgent: record('spawnAgent'),
+    killAgent: recordAsync('killAgent', undefined),
     resetReworkTicket: recordAsync('resetReworkTicket', undefined),
     removeWorktree: record('removeWorktree'),
     cleanupCancelledTicket: recordAsync('cleanupCancelledTicket', undefined),
@@ -656,6 +657,28 @@ for (const board of boards) {
     const effect = await processTicket('merging', ticket, board, deps);
     assert.deepEqual(effect, { kind: 'finalizeMerged' });
     assert.deepEqual(fnNames(calls), ['removeWorktree', 'moveToDone']);
+  });
+
+  // UP-825: the areAllPRsMerged fast-path must run BEFORE the isAgentRunning
+  // guard. A land agent hung in the claude PTY keeps isAgentRunning true on
+  // every cycle; without the reorder, a merged PR would never finalize. When
+  // the PR is merged and an agent is still running, kill it then finalize.
+  test(`[${board.name}] merging with running agent + PR already merged → kills agent then finalizes`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 124, 'merging', board);
+    const { deps, calls } = makeDeps({ isAgentRunning: () => true, areAllPRsMerged: () => true });
+    const effect = await processTicket('merging', ticket, board, deps);
+    assert.deepEqual(effect, { kind: 'finalizeMerged' });
+    assert.deepEqual(fnNames(calls), ['killAgent', 'removeWorktree', 'moveToDone']);
+    const killArgs = calls[0].args as [string];
+    assert.equal(killArgs[0], ticket.identifier);
+  });
+
+  test(`[${board.name}] merging with running agent + PR NOT merged → no-op (no kill, agent keeps landing)`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 125, 'merging', board);
+    const { deps, calls } = makeDeps({ isAgentRunning: () => true, areAllPRsMerged: () => false });
+    const effect = await processTicket('merging', ticket, board, deps);
+    assert.deepEqual(effect, { kind: 'noop', reason: 'agent already running' });
+    assert.deepEqual(calls, [], 'a still-landing agent must not be killed');
   });
 
   test(`[${board.name}] merging with open PR → spawns merging agent`, async () => {

@@ -59,6 +59,15 @@ export interface Deps<Board extends BoardRef = BoardRef> {
 
   // Agent lifecycle
   spawnAgent(ticket: Issue, board: Board, mode: SpawnMode, forMerging?: boolean): void;
+  /**
+   * Stop a running agent for `identifier` (SIGTERM → grace → SIGKILL) without
+   * changing the ticket state. Used by handleMerging to tear down a land agent
+   * that is still running after its PR has already merged on GitHub — e.g. one
+   * hung in the claude PTY — so finalize is immune to PTY hangs and the
+   * concurrency slot is freed immediately (UP-825). No-op when no agent is
+   * running for the identifier.
+   */
+  killAgent(identifier: string): Promise<void>;
   resetReworkTicket(ticket: Issue, board: Board): Promise<void>;
   removeWorktree(ticket: Issue, board: Board): void;
   /**
@@ -523,16 +532,28 @@ async function handleHumanReview<B extends BoardRef>({ ticket, board, deps }: Di
 
 async function handleMerging<B extends BoardRef>({ ticket, board, deps }: DispatchArgs<B>): Promise<Effect> {
   if (!deps.isEligible(ticket, board)) return { kind: 'noop', reason: 'not eligible' };
-  if (deps.isAgentRunning(ticket.identifier)) return { kind: 'noop', reason: 'agent already running' };
 
+  // areAllPRsMerged fast-path runs BEFORE the isAgentRunning guard (UP-825).
+  // Once a land agent is spawned, isAgentRunning stays true on every subsequent
+  // cycle — so if the agent hangs in the claude PTY, the merge check would
+  // never be re-reached and the ticket would sit in Merging until the agent is
+  // killed. Checking merge status first makes finalize idempotent w.r.t. agent
+  // state: when the PR is already merged we SIGTERM any still-running land agent
+  // and finalize inline, freeing the concurrency slot immediately.
   try {
     if (deps.areAllPRsMerged(ticket, board)) {
+      if (deps.isAgentRunning(ticket.identifier)) {
+        deps.log(`PR merged for ${ticket.identifier} but land agent still running — killing it before finalize`);
+        await deps.killAgent(ticket.identifier);
+      }
       deps.log(`PR already merged for ${ticket.identifier} — finalizing`);
       deps.removeWorktree(ticket, board);
       await deps.moveToDone(board, ticket.id, ticket.identifier);
       return { kind: 'finalizeMerged' };
     }
   } catch { /* fall through */ }
+
+  if (deps.isAgentRunning(ticket.identifier)) return { kind: 'noop', reason: 'agent already running' };
 
   if (deps.failureCountFor(ticket.identifier) >= MAX_RETRIES) {
     return { kind: 'noop', reason: 'max retries exhausted' };
