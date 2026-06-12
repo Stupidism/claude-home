@@ -1165,9 +1165,12 @@ async function forceResumeTicket(identifier: string): Promise<void> {
 
 /**
  * Stop a running agent without changing the ticket state.
- * SIGTERM → 500ms grace → SIGKILL. Cleans up the agent-pid file and the
- * runningAgents entry. Awaits child `exit` so callers (e.g. restart) can
- * safely respawn afterwards.
+ * SIGTERM → 500ms grace → SIGKILL, signalled to the whole process group so
+ * claude / MCP servers / nested shells die with the bash wrapper rather than
+ * being orphaned. Cleans up the agent-pid file and the runningAgents entry.
+ * Awaits child `exit` so callers (e.g. restart, or handleMerging freeing a
+ * concurrency slot) can safely respawn afterwards without the old tree still
+ * holding the worktree.
  */
 async function killAgent(identifier: string): Promise<void> {
   const upper = identifier.toUpperCase();
@@ -1187,12 +1190,23 @@ async function killAgent(identifier: string): Promise<void> {
     proc.once('exit', () => resolve());
   });
 
-  try { proc.kill('SIGTERM'); } catch { /* already dead */ }
+  // run-ticket.sh re-execs through setsid, so proc.pid is the PGID leader;
+  // signalling the negative PID reaps the whole tree instead of just the bash
+  // wrapper. Killing only the wrapper would let the slot free up (below) while
+  // claude/codex descendants are still alive — and the same poll cycle's Todo
+  // pass could then spawn new work alongside the orphaned tree (UP-825 P2).
+  try {
+    if (pid !== undefined) process.kill(-pid, 'SIGTERM');
+    else proc.kill('SIGTERM');
+  } catch { try { proc.kill('SIGTERM'); } catch { /* already dead */ } }
 
   const killTimer = setTimeout(() => {
     if (proc.exitCode == null && proc.signalCode == null) {
       log(chalk.red(`[${timestamp()}] ✗ Agent ${upper} didn't exit on SIGTERM — sending SIGKILL`));
-      try { proc.kill('SIGKILL'); } catch { /* already dead */ }
+      try {
+        if (pid !== undefined) process.kill(-pid, 'SIGKILL');
+        else proc.kill('SIGKILL');
+      } catch { try { proc.kill('SIGKILL'); } catch { /* already dead */ } }
     }
   }, 500);
 
@@ -2309,6 +2323,7 @@ async function poll(): Promise<void> {
       moveToTodo,
       moveToDone,
       spawnAgent,
+      killAgent,
       resetReworkTicket,
       removeWorktree,
       cleanupCancelledTicket,
@@ -2445,7 +2460,7 @@ async function poll(): Promise<void> {
     }
     const deps: StateMachineDeps<BoardConfig> = {
       moveToInProgress, moveToHumanReview, moveToMerging, moveToTodo, moveToDone,
-      spawnAgent, resetReworkTicket, removeWorktree, cleanupCancelledTicket,
+      spawnAgent, killAgent, resetReworkTicket, removeWorktree, cleanupCancelledTicket,
       areAllPRsMerged, isPRUrlMerged,
       checkHumanReviewApproval, postComment, spawnAIReview, isAiReviewEnabled,
       getOpenPRUrl, getPRHeadSha, getAiReviewStatus, postAiReviewStatus, hasReviewForSha,
