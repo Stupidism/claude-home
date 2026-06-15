@@ -57,12 +57,15 @@ signal.signal(signal.SIGTERM, forward_signal)
 signal.signal(signal.SIGINT, forward_signal)
 signal.signal(signal.SIGHUP, forward_signal)
 
-# Match the poller's RATE_LIMIT_PATTERN (poll-tickets.mts):
-# /You've hit your limit|rate.?limit/i — case-insensitive, accepts either
-# "rate-limit" / "ratelimit" / "rate limit". Require a line terminator so we
-# only forward a complete banner line, not arbitrary text mid-stream.
+# Match the poller's RATE_LIMIT_PATTERN (rate-limit.mts) and pty-wrapper.py's
+# RATE_LIMIT_RE: require the full Claude banner ("You've hit your limit … resets")
+# on a single line. The old loose `rate[- ]?limit` alternative matched any line
+# that merely mentioned "rate limit" / "rate-limit" (npm warnings, library
+# errors, code comments) and SIGTERM'd the Codex process — the same self-DOS
+# class fixed in the poller (UP-831). Require a line terminator so we only
+# forward a complete banner line, not arbitrary text mid-stream.
 RATE_LIMIT_RE = re.compile(
-    rb"(?:You(?:'|\xe2\x80\x99)ve hit your limit|rate[- ]?limit)[^\r\n]*[\r\n]",
+    rb"You(?:'|\xe2\x80\x99)ve hit your limit[^\r\n]*resets[^\r\n]*[\r\n]",
     re.IGNORECASE,
 )
 ANSI_RE = re.compile(
