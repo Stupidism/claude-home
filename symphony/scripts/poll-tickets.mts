@@ -591,13 +591,72 @@ function resolveSentryRepo(ticket: Issue, board: BoardConfig): RepoConfig | null
   return board.repos.find((r) => (r.sentryProject ?? r.name).toLowerCase() === slug) ?? null;
 }
 
+/**
+ * Cache the repo a ticket's branch was found to live in, so the GitHub probe in
+ * `resolveRepoByPR` runs at most once per ticket per poller process. Keyed by
+ * `ticket.identifier`. Only positive hits are cached — the primaryRepo fallback
+ * is never cached, so a branch that lands in a non-primary repo on a later cycle
+ * is still detected (UP-824).
+ */
+const resolvedRepoCache = new Map<string, RepoConfig>();
+
+/**
+ * Probe which repo in a multi-repo project actually owns the ticket's branch.
+ *
+ * A project label (e.g. `project:hiring`) can span several repos and the branch
+ * may land in any of them, not necessarily `project.primaryRepo`. We ask GitHub
+ * which candidate repo has a PR (open OR merged) for `feat/<TICKET_ID>-*`, using
+ * `gh pr list --state all` rather than probing `git ls-remote`: the remote
+ * branch is deleted on merge, but the PR record survives. This is the same
+ * signal `areAllPRsMerged()` relies on, so the two stay consistent — which is
+ * the bug UP-824 fixes (resolveRepo returning primaryRepo while the merged PR
+ * lived elsewhere left tickets stuck in Merging forever).
+ *
+ * Returns the owning repo, or null when no candidate claims the branch (e.g. a
+ * fresh ticket whose branch hasn't been pushed yet).
+ */
+function resolveRepoByPR(
+  ticket: Issue,
+  project: ProjectConfig,
+  repoMap: Map<string, RepoConfig>,
+): RepoConfig | null {
+  const branch = branchForIssue(ticket);
+  for (const entry of project.repos) {
+    const repo = repoMap.get(entry.name);
+    if (!repo) continue;
+    const result = child_process.spawnSync(
+      'gh',
+      ['pr', 'list', '--repo', repo.githubRepo, '--head', branch, '--state', 'all', '--json', 'number', '--limit', '1'],
+      { encoding: 'utf8', timeout: 15_000, env: { ...process.env, GH_PROMPT_DISABLED: '1', GIT_TERMINAL_PROMPT: '0' } },
+    );
+    if (result.status !== 0) continue;
+    try {
+      if ((JSON.parse(result.stdout) as unknown[]).length > 0) return repo;
+    } catch { /* malformed gh output — treat as no PR */ }
+  }
+  return null;
+}
+
 function resolveRepo(ticket: Issue, board: BoardConfig): RepoConfig {
   const repoMap = new Map<string, RepoConfig>(board.repos.map((r) => [r.name, r]));
   const sentryRepo = resolveSentryRepo(ticket, board);
   if (sentryRepo) return sentryRepo;
+  const cached = resolvedRepoCache.get(ticket.identifier);
+  if (cached) return cached;
   if (ticket.project) {
     const resolved = projectMap.get(ticket.project.id);
-    if (resolved) return resolved.primaryRepo;
+    if (resolved) {
+      // Multi-repo project: the branch may live in a non-primary repo, so probe
+      // GitHub for the repo that actually owns the PR before falling back.
+      if (resolved.project.repos.length > 1) {
+        const owner = resolveRepoByPR(ticket, resolved.project, repoMap);
+        if (owner) {
+          resolvedRepoCache.set(ticket.identifier, owner);
+          return owner;
+        }
+      }
+      return resolved.primaryRepo;
+    }
   }
   return repoMap.get(board.defaultRepo) ?? board.repos[0];
 }
