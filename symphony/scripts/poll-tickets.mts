@@ -594,23 +594,35 @@ function resolveSentryRepo(ticket: Issue, board: BoardConfig): RepoConfig | null
 /**
  * Cache the repo a ticket's branch was found to live in, so the GitHub probe in
  * `resolveRepoByPR` runs at most once per ticket per poller process. Keyed by
- * `ticket.identifier`. Only positive hits are cached — the primaryRepo fallback
- * is never cached, so a branch that lands in a non-primary repo on a later cycle
- * is still detected (UP-824).
+ * board + project + ticket identifier (see `resolvedRepoCacheKey`) so a ticket
+ * that gets re-labelled into a different project mid-process is not served a
+ * stale repo. Only positive probe hits are cached — the primaryRepo fallback
+ * (no PR found anywhere) is never cached, so a branch pushed on a later cycle is
+ * still detected (UP-824).
  */
 const resolvedRepoCache = new Map<string, RepoConfig>();
+
+function resolvedRepoCacheKey(board: BoardConfig, ticket: Issue): string {
+  return `${board.name}:${ticket.project?.id ?? '(no-project)'}:${ticket.identifier}`;
+}
 
 /**
  * Probe which repo in a multi-repo project actually owns the ticket's branch.
  *
  * A project label (e.g. `project:hiring`) can span several repos and the branch
  * may land in any of them, not necessarily `project.primaryRepo`. We ask GitHub
- * which candidate repo has a PR (open OR merged) for `feat/<TICKET_ID>-*`, using
+ * which candidate repo has an open OR merged PR for `feat/<TICKET_ID>-*`, using
  * `gh pr list --state all` rather than probing `git ls-remote`: the remote
  * branch is deleted on merge, but the PR record survives. This is the same
  * signal `areAllPRsMerged()` relies on, so the two stay consistent — which is
  * the bug UP-824 fixes (resolveRepo returning primaryRepo while the merged PR
  * lived elsewhere left tickets stuck in Merging forever).
+ *
+ * A CLOSED-but-unmerged PR does NOT count as ownership: a stale closed PR left
+ * by a rework/reset in an earlier candidate repo must not shadow the real
+ * open/merged PR in a later one (that would reproduce the same deadlock). We
+ * therefore fetch `state` and accept only OPEN / MERGED — exactly the states
+ * `areAllPRsMerged()` keys off.
  *
  * Returns the owning repo, or null when no candidate claims the branch (e.g. a
  * fresh ticket whose branch hasn't been pushed yet).
@@ -626,12 +638,13 @@ function resolveRepoByPR(
     if (!repo) continue;
     const result = child_process.spawnSync(
       'gh',
-      ['pr', 'list', '--repo', repo.githubRepo, '--head', branch, '--state', 'all', '--json', 'number', '--limit', '1'],
+      ['pr', 'list', '--repo', repo.githubRepo, '--head', branch, '--state', 'all', '--json', 'state', '--limit', '20'],
       { encoding: 'utf8', timeout: 15_000, env: { ...process.env, GH_PROMPT_DISABLED: '1', GIT_TERMINAL_PROMPT: '0' } },
     );
     if (result.status !== 0) continue;
     try {
-      if ((JSON.parse(result.stdout) as unknown[]).length > 0) return repo;
+      const prs = JSON.parse(result.stdout) as Array<{ state: string }>;
+      if (prs.some((pr) => pr.state === 'OPEN' || pr.state === 'MERGED')) return repo;
     } catch { /* malformed gh output — treat as no PR */ }
   }
   return null;
@@ -641,17 +654,18 @@ function resolveRepo(ticket: Issue, board: BoardConfig): RepoConfig {
   const repoMap = new Map<string, RepoConfig>(board.repos.map((r) => [r.name, r]));
   const sentryRepo = resolveSentryRepo(ticket, board);
   if (sentryRepo) return sentryRepo;
-  const cached = resolvedRepoCache.get(ticket.identifier);
-  if (cached) return cached;
   if (ticket.project) {
     const resolved = projectMap.get(ticket.project.id);
     if (resolved) {
+      const cacheKey = resolvedRepoCacheKey(board, ticket);
+      const cached = resolvedRepoCache.get(cacheKey);
+      if (cached) return cached;
       // Multi-repo project: the branch may live in a non-primary repo, so probe
       // GitHub for the repo that actually owns the PR before falling back.
       if (resolved.project.repos.length > 1) {
         const owner = resolveRepoByPR(ticket, resolved.project, repoMap);
         if (owner) {
-          resolvedRepoCache.set(ticket.identifier, owner);
+          resolvedRepoCache.set(cacheKey, owner);
           return owner;
         }
       }

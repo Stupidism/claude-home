@@ -17,9 +17,10 @@ import assert from 'node:assert/strict';
 
 type RepoConfig = { name: string; githubRepo: string };
 type Project = { primaryRepo: string; repos: Array<{ name: string }> };
+type PRState = 'OPEN' | 'CLOSED' | 'MERGED';
 
-/** Stubbed `gh pr list --state all` probe: which repo slugs own a PR. */
-type Probe = (githubRepo: string) => boolean;
+/** Stubbed `gh pr list --state all --json state`: the PRs each repo slug returns. */
+type Probe = (githubRepo: string) => PRState[];
 
 /** Mirror of poll-tickets.mts:resolveRepoByPR (gh spawn replaced by `probe`). */
 function resolveRepoByPR(
@@ -30,7 +31,8 @@ function resolveRepoByPR(
   for (const entry of project.repos) {
     const repo = repoMap.get(entry.name);
     if (!repo) continue;
-    if (probe(repo.githubRepo)) return repo;
+    const prs = probe(repo.githubRepo);
+    if (prs.some((s) => s === 'OPEN' || s === 'MERGED')) return repo;
   }
   return null;
 }
@@ -70,17 +72,28 @@ const hiring: Project = {
 
 test('resolves to the non-primary repo that actually owns the branch (UP-793 scenario)', () => {
   // PR lives in workstream-hr, not the primaryRepo workstream-mono.
-  const { resolve } = makeResolveRepo(hiring, repoMap, 'workstream-mono', (s) => s === 'ws/workstream-hr');
+  const { resolve } = makeResolveRepo(hiring, repoMap, 'workstream-mono', (s) => (s === 'ws/workstream-hr' ? ['MERGED'] : []));
   assert.equal(resolve('UP-793').name, 'workstream-hr');
 });
 
 test('falls back to primaryRepo when no candidate repo owns the branch (fresh spawn)', () => {
-  const { resolve } = makeResolveRepo(hiring, repoMap, 'workstream-mono', () => false);
+  const { resolve } = makeResolveRepo(hiring, repoMap, 'workstream-mono', () => []);
   assert.equal(resolve('UP-999').name, 'workstream-mono');
 });
 
+test('a stale CLOSED PR does not claim ownership — the open PR in a later repo wins', () => {
+  // workstream-mono has a leftover closed PR (rework/reset); the real open PR is
+  // in workstream-hr further down project.repos.
+  const { resolve } = makeResolveRepo(hiring, repoMap, 'workstream-mono', (s) => {
+    if (s === 'ws/workstream-mono') return ['CLOSED'];
+    if (s === 'ws/workstream-hr') return ['OPEN'];
+    return [];
+  });
+  assert.equal(resolve('UP-814').name, 'workstream-hr');
+});
+
 test('probe runs at most once per ticket — second resolve is cached', () => {
-  const { resolve, probeCalls } = makeResolveRepo(hiring, repoMap, 'workstream-mono', (s) => s === 'ws/workstream-hr');
+  const { resolve, probeCalls } = makeResolveRepo(hiring, repoMap, 'workstream-mono', (s) => (s === 'ws/workstream-hr' ? ['MERGED'] : []));
   resolve('UP-793');
   const before = probeCalls();
   resolve('UP-793');
@@ -90,7 +103,7 @@ test('probe runs at most once per ticket — second resolve is cached', () => {
 
 test('the primaryRepo fallback is NOT cached — a later cycle can still detect the branch', () => {
   let prExists = false;
-  const { resolve } = makeResolveRepo(hiring, repoMap, 'workstream-mono', (s) => prExists && s === 'ws/workstream-hr');
+  const { resolve } = makeResolveRepo(hiring, repoMap, 'workstream-mono', (s) => (prExists && s === 'ws/workstream-hr' ? ['OPEN'] : []));
   assert.equal(resolve('UP-810').name, 'workstream-mono', 'no PR yet → fallback');
   prExists = true; // branch pushed + PR opened on a later poll cycle
   assert.equal(resolve('UP-810').name, 'workstream-hr', 'fallback must not have been cached');
@@ -98,13 +111,13 @@ test('the primaryRepo fallback is NOT cached — a later cycle can still detect 
 
 test('single-repo project skips the probe entirely', () => {
   const solo: Project = { primaryRepo: 'workstream-mono', repos: [{ name: 'workstream-mono' }] };
-  const { resolve, probeCalls } = makeResolveRepo(solo, repoMap, 'workstream-mono', () => true);
+  const { resolve, probeCalls } = makeResolveRepo(solo, repoMap, 'workstream-mono', () => ['OPEN']);
   assert.equal(resolve('UP-1').name, 'workstream-mono');
   assert.equal(probeCalls(), 0, 'a single-repo project has no ambiguity to probe');
 });
 
 test('first repo in project.repos order wins when multiple own a PR', () => {
   // Iteration follows project.repos order: mono, hr, backend.
-  const { resolve } = makeResolveRepo(hiring, repoMap, 'workstream-mono', () => true);
+  const { resolve } = makeResolveRepo(hiring, repoMap, 'workstream-mono', () => ['OPEN']);
   assert.equal(resolve('UP-2').name, 'workstream-mono');
 });
