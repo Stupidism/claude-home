@@ -36,6 +36,7 @@ import {
   findNxDaemonPids,
   findDeadAgentIdentifiers,
 } from './orphan-cleanup.mts';
+import { codexCommentMatchesSha, type IssueComment } from './ai-review-comments.mts';
 import type {
   BoardGithubProjectsConfig,
   BoardJiraConfig,
@@ -2059,12 +2060,44 @@ function hasReviewForSha(prUrl: string, sha: string): Promise<boolean> {
     );
     let output = '';
     child.stdout?.on('data', (d: Buffer) => (output += d.toString()));
+    child.on('error', () => resolve(hasCodexReviewCommentForSha(ref, sha)));
+    child.on('exit', (code) => {
+      if (code === 0) {
+        try {
+          const data = JSON.parse(output) as { reviews: Array<{ commit?: { oid?: string }; commitId?: string }> };
+          if (data.reviews.some((r) => (r.commit?.oid ?? r.commitId) === sha)) return resolve(true);
+        } catch {
+          // fall through to the issue-comment scan below
+        }
+      }
+      // UP-832: no formal PR review matched. `@codex review` sometimes posts
+      // its verdict as an issue comment (/issues/N/comments) — invisible to
+      // `gh pr view --json reviews` — so fall back to scanning issue comments
+      // for Codex's `Reviewed commit: <sha>` marker.
+      resolve(hasCodexReviewCommentForSha(ref, sha));
+    });
+  });
+}
+
+// UP-832: scan PR issue comments for an AI reviewer's `Reviewed commit: <sha>`
+// marker matching the head SHA. `--paginate` alone emits each page as its own
+// JSON array (`[..][..]`), which `JSON.parse` chokes on once a busy PR exceeds
+// one page; `--slurp` wraps the pages into a single array-of-arrays we flatten.
+function hasCodexReviewCommentForSha(ref: { repo: string; prNumber: string }, sha: string): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const child = child_process.spawn(
+      'gh',
+      ['api', '--paginate', '--slurp', `repos/${ref.repo}/issues/${ref.prNumber}/comments?per_page=100`],
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    let output = '';
+    child.stdout?.on('data', (d: Buffer) => (output += d.toString()));
     child.on('error', () => resolve(false));
     child.on('exit', (code) => {
       if (code !== 0) return resolve(false);
       try {
-        const data = JSON.parse(output) as { reviews: Array<{ commit?: { oid?: string }; commitId?: string }> };
-        resolve(data.reviews.some((r) => (r.commit?.oid ?? r.commitId) === sha));
+        const pages = JSON.parse(output) as IssueComment[][];
+        resolve(codexCommentMatchesSha(pages.flat(), sha));
       } catch {
         resolve(false);
       }
