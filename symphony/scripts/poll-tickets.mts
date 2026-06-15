@@ -1759,8 +1759,10 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
             }
             void id; // suppress unused warning
           }
-          // Also include the current (already-exited) agent's session
-          if (!runningAgents.has(ticket.identifier)) {
+          // Also include the current (already-exited) agent's session — but not
+          // when it was finalized as merged, or a Done ticket gets re-queued for
+          // resume and shifted back (CodeRabbit on PR #79).
+          if (!finalizedAsMerged && !runningAgents.has(ticket.identifier)) {
             const sessionFile = path.join(agent?.worktreePath ?? '', '.claude-session-id');
             if (agent?.worktreePath && fs.existsSync(sessionFile)) {
               const sessionId = fs.readFileSync(sessionFile, 'utf8').trim();
