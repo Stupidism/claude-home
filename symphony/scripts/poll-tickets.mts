@@ -1676,6 +1676,20 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
     if (isShuttingDown) {
       log(chalk.yellow(`[${timestamp()}] ⚠ Agent interrupted:`) + ` ${chalk.bold(ticket.identifier)}`);
     } else if (code !== 0 && signal == null) {
+      // A land agent can exit non-zero AFTER GitHub already merged the PR (e.g.
+      // a post-merge/reporting failure). The 'PR merged' fact is authoritative,
+      // so finalize to Done rather than counting a failure and re-spawning
+      // (UP-827; Codex P2 on PR #79). Mirrors the success-branch finalize below.
+      if (agent?.spawnedForMerging) {
+        const mergingAgent = agent;
+        if (shouldFinalizeMergedAgent(code, () => areAllPRsMerged(ticket, mergingAgent.board))) {
+          failureCounts.delete(ticket.identifier);
+          log(chalk.green(`[${timestamp()}] ✓ Land agent exited ${code} but PR merged:`) + ` ${chalk.bold(ticket.identifier)} — finalizing`);
+          moveToDone(mergingAgent.board, mergingAgent.issueId, ticket.identifier).catch(() => {});
+          renderDashboard();
+          return;
+        }
+      }
       // Skip rate-limit check for signal-killed processes (SIGTERM from our own cleanup)
       const agentLog = path.join(SYMPHONY_ROOT, 'logs', `symphony-${ticket.identifier}.log`);
       let hitRateLimit = false;
