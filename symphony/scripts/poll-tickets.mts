@@ -2080,13 +2080,14 @@ function hasReviewForSha(prUrl: string, sha: string): Promise<boolean> {
 }
 
 // UP-832: scan PR issue comments for an AI reviewer's `Reviewed commit: <sha>`
-// marker matching the head SHA. `--paginate` merges all comment pages into a
-// single JSON array.
+// marker matching the head SHA. `--paginate` alone emits each page as its own
+// JSON array (`[..][..]`), which `JSON.parse` chokes on once a busy PR exceeds
+// one page; `--slurp` wraps the pages into a single array-of-arrays we flatten.
 function hasCodexReviewCommentForSha(ref: { repo: string; prNumber: string }, sha: string): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     const child = child_process.spawn(
       'gh',
-      ['api', '--paginate', `repos/${ref.repo}/issues/${ref.prNumber}/comments?per_page=100`],
+      ['api', '--paginate', '--slurp', `repos/${ref.repo}/issues/${ref.prNumber}/comments?per_page=100`],
       { stdio: ['ignore', 'pipe', 'pipe'] },
     );
     let output = '';
@@ -2095,8 +2096,8 @@ function hasCodexReviewCommentForSha(ref: { repo: string; prNumber: string }, sh
     child.on('exit', (code) => {
       if (code !== 0) return resolve(false);
       try {
-        const comments = JSON.parse(output) as IssueComment[];
-        resolve(codexCommentMatchesSha(comments, sha));
+        const pages = JSON.parse(output) as IssueComment[][];
+        resolve(codexCommentMatchesSha(pages.flat(), sha));
       } catch {
         resolve(false);
       }
