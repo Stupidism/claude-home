@@ -52,6 +52,7 @@ import {
   FEEDBACK_REROUTE_LOCK_PREFIX,
   NEEDS_NOTIFY_LABEL,
   REVIEW_NOTIFIED_LABEL,
+  shouldFinalizeMergedAgent,
   MAX_RETRIES as STATE_MACHINE_MAX_RETRIES,
   type Deps as StateMachineDeps,
   type SpawnMode,
@@ -1675,7 +1676,12 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
     if (isShuttingDown) {
       log(chalk.yellow(`[${timestamp()}] ⚠ Agent interrupted:`) + ` ${chalk.bold(ticket.identifier)}`);
     } else if (code !== 0 && signal == null) {
-      // Skip rate-limit check for signal-killed processes (SIGTERM from our own cleanup)
+      // Scan for a rate-limit banner FIRST. A rate-limit pause is global (it
+      // halts spawning for every ticket), so it must run even when we go on to
+      // finalize a merged land agent's ticket below — otherwise a land agent
+      // that exits non-zero due to a rate limit AFTER the PR merged would
+      // finalize cleanly but never pause the poller, leaving it to keep
+      // spawning agents while the account is throttled (Codex P2 on PR #79).
       const agentLog = path.join(SYMPHONY_ROOT, 'logs', `symphony-${ticket.identifier}.log`);
       let hitRateLimit = false;
       let logTail = '';
@@ -1696,6 +1702,23 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
         fs.closeSync(fd);
       } catch { /* unreadable */ }
 
+      // A land agent can exit non-zero AFTER GitHub already merged the PR (e.g.
+      // a post-merge/reporting failure). The 'PR merged' fact is authoritative,
+      // so finalize to Done rather than counting a failure and re-spawning
+      // (UP-827; Codex P2 on PR #79). Mirrors the success-branch finalize below.
+      // No early return — control falls through to the rate-limit handling so a
+      // rate-limited exit still pauses the poller instead of being swallowed.
+      let finalizedAsMerged = false;
+      if (agent?.spawnedForMerging) {
+        const mergingAgent = agent;
+        if (shouldFinalizeMergedAgent(code, () => areAllPRsMerged(ticket, mergingAgent.board))) {
+          failureCounts.delete(ticket.identifier);
+          log(chalk.green(`[${timestamp()}] ✓ Land agent exited ${code} but PR merged:`) + ` ${chalk.bold(ticket.identifier)} — finalizing`);
+          moveToDone(mergingAgent.board, mergingAgent.issueId, ticket.identifier).catch(() => {});
+          finalizedAsMerged = true;
+        }
+      }
+
       if (hitRateLimit) {
         const resetDate = parseRateLimitResetTime(logTail);
         const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
@@ -1713,9 +1736,11 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
         } else if (suspicious) {
           // Likely a weekly-limit banner or stale parse; don't blind-pause for hours.
           log(chalk.yellow(`[${timestamp()}] ⚠ Suspicious reset time (>6h, parsed ${resetDate.toLocaleTimeString()}) — ignoring banner for ${chalk.bold(ticket.identifier)}`));
-          const failures = (failureCounts.get(ticket.identifier) ?? 0) + 1;
-          failureCounts.set(ticket.identifier, failures);
-          log(chalk.red(`[${timestamp()}] ✗ Agent failed:`) + ` ${chalk.bold(ticket.identifier)} (exit ${code ?? signal}, attempt ${failures}/${MAX_RETRIES})`);
+          if (!finalizedAsMerged) {
+            const failures = (failureCounts.get(ticket.identifier) ?? 0) + 1;
+            failureCounts.set(ticket.identifier, failures);
+            log(chalk.red(`[${timestamp()}] ✗ Agent failed:`) + ` ${chalk.bold(ticket.identifier)} (exit ${code ?? signal}, attempt ${failures}/${MAX_RETRIES})`);
+          }
         } else {
           // Collect session info for all running agents before killing them
           rateLimitPausedSessions = [];
@@ -1734,8 +1759,10 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
             }
             void id; // suppress unused warning
           }
-          // Also include the current (already-exited) agent's session
-          if (!runningAgents.has(ticket.identifier)) {
+          // Also include the current (already-exited) agent's session — but not
+          // when it was finalized as merged, or a Done ticket gets re-queued for
+          // resume and shifted back (CodeRabbit on PR #79).
+          if (!finalizedAsMerged && !runningAgents.has(ticket.identifier)) {
             const sessionFile = path.join(agent?.worktreePath ?? '', '.claude-session-id');
             if (agent?.worktreePath && fs.existsSync(sessionFile)) {
               const sessionId = fs.readFileSync(sessionFile, 'utf8').trim();
@@ -1748,7 +1775,7 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
           log(chalk.yellow(`[${timestamp()}] ⏸ Rate limit hit: ${chalk.bold(ticket.identifier)} — pausing until ${resetDate.toLocaleTimeString()} (~${Math.ceil(pauseMs! / 60000)}min, incl. +5min buffer)`));
           rateLimitPausedUntil = resetDate;
         }
-      } else {
+      } else if (!finalizedAsMerged) {
         const failures = (failureCounts.get(ticket.identifier) ?? 0) + 1;
         failureCounts.set(ticket.identifier, failures);
         log(chalk.red(`[${timestamp()}] ✗ Agent failed:`) + ` ${chalk.bold(ticket.identifier)} (exit ${code ?? signal}, attempt ${failures}/${MAX_RETRIES})`);
@@ -1756,8 +1783,17 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
     } else {
       failureCounts.delete(ticket.identifier);
       log(chalk.green(`[${timestamp()}] ✓ Agent done:`) + ` ${chalk.bold(ticket.identifier)}`);
-      if (agent?.spawnedForMerging && code === 0) {
-        moveToDone(agent.board, agent.issueId, ticket.identifier).catch(() => {});
+      if (agent?.spawnedForMerging) {
+        // Finalize to Done whenever the land agent exited cleanly OR the PR is
+        // already merged on GitHub — even if the agent was SIGKILL'd
+        // (`code === null`), which would otherwise leave the ticket stuck in
+        // Merging and re-spawn a fresh land agent every poll cycle (UP-827).
+        // moveToDone is idempotent. A Merging agent never falls through to the
+        // Human Review branch below.
+        const mergingAgent = agent;
+        if (shouldFinalizeMergedAgent(code, () => areAllPRsMerged(ticket, mergingAgent.board))) {
+          moveToDone(mergingAgent.board, mergingAgent.issueId, ticket.identifier).catch(() => {});
+        }
       } else if (agent) {
         // Respect terminal/explicit states the agent set during the session.
         // Without this guard, an agent that finalized to Done (e.g. "already
