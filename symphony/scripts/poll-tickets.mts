@@ -1676,21 +1676,12 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
     if (isShuttingDown) {
       log(chalk.yellow(`[${timestamp()}] ⚠ Agent interrupted:`) + ` ${chalk.bold(ticket.identifier)}`);
     } else if (code !== 0 && signal == null) {
-      // A land agent can exit non-zero AFTER GitHub already merged the PR (e.g.
-      // a post-merge/reporting failure). The 'PR merged' fact is authoritative,
-      // so finalize to Done rather than counting a failure and re-spawning
-      // (UP-827; Codex P2 on PR #79). Mirrors the success-branch finalize below.
-      if (agent?.spawnedForMerging) {
-        const mergingAgent = agent;
-        if (shouldFinalizeMergedAgent(code, () => areAllPRsMerged(ticket, mergingAgent.board))) {
-          failureCounts.delete(ticket.identifier);
-          log(chalk.green(`[${timestamp()}] ✓ Land agent exited ${code} but PR merged:`) + ` ${chalk.bold(ticket.identifier)} — finalizing`);
-          moveToDone(mergingAgent.board, mergingAgent.issueId, ticket.identifier).catch(() => {});
-          renderDashboard();
-          return;
-        }
-      }
-      // Skip rate-limit check for signal-killed processes (SIGTERM from our own cleanup)
+      // Scan for a rate-limit banner FIRST. A rate-limit pause is global (it
+      // halts spawning for every ticket), so it must run even when we go on to
+      // finalize a merged land agent's ticket below — otherwise a land agent
+      // that exits non-zero due to a rate limit AFTER the PR merged would
+      // finalize cleanly but never pause the poller, leaving it to keep
+      // spawning agents while the account is throttled (Codex P2 on PR #79).
       const agentLog = path.join(SYMPHONY_ROOT, 'logs', `symphony-${ticket.identifier}.log`);
       let hitRateLimit = false;
       let logTail = '';
@@ -1711,6 +1702,23 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
         fs.closeSync(fd);
       } catch { /* unreadable */ }
 
+      // A land agent can exit non-zero AFTER GitHub already merged the PR (e.g.
+      // a post-merge/reporting failure). The 'PR merged' fact is authoritative,
+      // so finalize to Done rather than counting a failure and re-spawning
+      // (UP-827; Codex P2 on PR #79). Mirrors the success-branch finalize below.
+      // No early return — control falls through to the rate-limit handling so a
+      // rate-limited exit still pauses the poller instead of being swallowed.
+      let finalizedAsMerged = false;
+      if (agent?.spawnedForMerging) {
+        const mergingAgent = agent;
+        if (shouldFinalizeMergedAgent(code, () => areAllPRsMerged(ticket, mergingAgent.board))) {
+          failureCounts.delete(ticket.identifier);
+          log(chalk.green(`[${timestamp()}] ✓ Land agent exited ${code} but PR merged:`) + ` ${chalk.bold(ticket.identifier)} — finalizing`);
+          moveToDone(mergingAgent.board, mergingAgent.issueId, ticket.identifier).catch(() => {});
+          finalizedAsMerged = true;
+        }
+      }
+
       if (hitRateLimit) {
         const resetDate = parseRateLimitResetTime(logTail);
         const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
@@ -1728,9 +1736,11 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
         } else if (suspicious) {
           // Likely a weekly-limit banner or stale parse; don't blind-pause for hours.
           log(chalk.yellow(`[${timestamp()}] ⚠ Suspicious reset time (>6h, parsed ${resetDate.toLocaleTimeString()}) — ignoring banner for ${chalk.bold(ticket.identifier)}`));
-          const failures = (failureCounts.get(ticket.identifier) ?? 0) + 1;
-          failureCounts.set(ticket.identifier, failures);
-          log(chalk.red(`[${timestamp()}] ✗ Agent failed:`) + ` ${chalk.bold(ticket.identifier)} (exit ${code ?? signal}, attempt ${failures}/${MAX_RETRIES})`);
+          if (!finalizedAsMerged) {
+            const failures = (failureCounts.get(ticket.identifier) ?? 0) + 1;
+            failureCounts.set(ticket.identifier, failures);
+            log(chalk.red(`[${timestamp()}] ✗ Agent failed:`) + ` ${chalk.bold(ticket.identifier)} (exit ${code ?? signal}, attempt ${failures}/${MAX_RETRIES})`);
+          }
         } else {
           // Collect session info for all running agents before killing them
           rateLimitPausedSessions = [];
@@ -1763,7 +1773,7 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
           log(chalk.yellow(`[${timestamp()}] ⏸ Rate limit hit: ${chalk.bold(ticket.identifier)} — pausing until ${resetDate.toLocaleTimeString()} (~${Math.ceil(pauseMs! / 60000)}min, incl. +5min buffer)`));
           rateLimitPausedUntil = resetDate;
         }
-      } else {
+      } else if (!finalizedAsMerged) {
         const failures = (failureCounts.get(ticket.identifier) ?? 0) + 1;
         failureCounts.set(ticket.identifier, failures);
         log(chalk.red(`[${timestamp()}] ✗ Agent failed:`) + ` ${chalk.bold(ticket.identifier)} (exit ${code ?? signal}, attempt ${failures}/${MAX_RETRIES})`);
