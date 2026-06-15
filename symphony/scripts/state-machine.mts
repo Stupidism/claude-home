@@ -230,6 +230,31 @@ export const NEEDS_NOTIFY_LABEL = 'symphony:needs-notify-review';
 /** Poller-applied label that records the notify side-effect already fired. */
 export const REVIEW_NOTIFIED_LABEL = 'symphony:review-notified';
 
+/**
+ * Decide whether a land agent (one spawned for the Merging state) that just
+ * exited should finalize its ticket to Done.
+ *
+ * The "PR merged" fact is authoritative — the land agent is only a means to
+ * land the PR. A clean exit (`code === 0`) finalizes directly. But a SIGKILL'd
+ * agent reports `{ code: null, signal: 'SIGKILL' }`, so the historical
+ * `code === 0` gate skipped the finalize and left the ticket stuck in Merging,
+ * re-spawning a fresh land agent every poll cycle (UP-827). When the agent did
+ * NOT exit cleanly, fall back to the authoritative GitHub state via `isMerged`.
+ * `isMerged` is best-effort: if it throws, treat the PR as not merged so we
+ * retry rather than finalize on incomplete information.
+ */
+export function shouldFinalizeMergedAgent(
+  code: number | null,
+  isMerged: () => boolean,
+): boolean {
+  if (code === 0) return true;
+  try {
+    return isMerged();
+  } catch {
+    return false;
+  }
+}
+
 // ── XState chart (declarative documentation + viz) ────────────────────────────
 
 /**

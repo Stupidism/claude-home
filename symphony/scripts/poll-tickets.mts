@@ -52,6 +52,7 @@ import {
   FEEDBACK_REROUTE_LOCK_PREFIX,
   NEEDS_NOTIFY_LABEL,
   REVIEW_NOTIFIED_LABEL,
+  shouldFinalizeMergedAgent,
   MAX_RETRIES as STATE_MACHINE_MAX_RETRIES,
   type Deps as StateMachineDeps,
   type SpawnMode,
@@ -1756,8 +1757,17 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
     } else {
       failureCounts.delete(ticket.identifier);
       log(chalk.green(`[${timestamp()}] ✓ Agent done:`) + ` ${chalk.bold(ticket.identifier)}`);
-      if (agent?.spawnedForMerging && code === 0) {
-        moveToDone(agent.board, agent.issueId, ticket.identifier).catch(() => {});
+      if (agent?.spawnedForMerging) {
+        // Finalize to Done whenever the land agent exited cleanly OR the PR is
+        // already merged on GitHub — even if the agent was SIGKILL'd
+        // (`code === null`), which would otherwise leave the ticket stuck in
+        // Merging and re-spawn a fresh land agent every poll cycle (UP-827).
+        // moveToDone is idempotent. A Merging agent never falls through to the
+        // Human Review branch below.
+        const mergingAgent = agent;
+        if (shouldFinalizeMergedAgent(code, () => areAllPRsMerged(ticket, mergingAgent.board))) {
+          moveToDone(mergingAgent.board, mergingAgent.issueId, ticket.identifier).catch(() => {});
+        }
       } else if (agent) {
         // Respect terminal/explicit states the agent set during the session.
         // Without this guard, an agent that finalized to Done (e.g. "already

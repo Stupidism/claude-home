@@ -16,6 +16,7 @@ import * as path from 'node:path';
 import {
   processTicket,
   ticketMachine,
+  shouldFinalizeMergedAgent,
   type BoardRef,
   type Deps,
   type Effect,
@@ -887,4 +888,36 @@ test('ticketMachine done is a final state', () => {
 test('ticketMachine cancelled is a final state', () => {
   const cancelled = ticketMachine.config.states?.cancelled as { type?: string } | undefined;
   assert.equal(cancelled?.type, 'final');
+});
+
+// ── shouldFinalizeMergedAgent (UP-827) ────────────────────────────────────────
+// Guards the close-handler decision for a SIGKILL'd land agent. The historical
+// `code === 0` gate skipped moveToDone on `{ code: null, signal: 'SIGKILL' }`,
+// leaving the ticket stuck in Merging and re-spawning a fresh land agent forever.
+
+test('shouldFinalizeMergedAgent: clean exit (code 0) finalizes without checking GitHub', () => {
+  let checked = false;
+  const result = shouldFinalizeMergedAgent(0, () => { checked = true; return false; });
+  assert.equal(result, true);
+  assert.equal(checked, false, 'a clean exit must not need the GitHub merge check');
+});
+
+test('shouldFinalizeMergedAgent: SIGKILL (code null) + PR merged → finalize', () => {
+  const result = shouldFinalizeMergedAgent(null, () => true);
+  assert.equal(result, true);
+});
+
+test('shouldFinalizeMergedAgent: SIGKILL (code null) + PR NOT merged → do not finalize (retry)', () => {
+  const result = shouldFinalizeMergedAgent(null, () => false);
+  assert.equal(result, false);
+});
+
+test('shouldFinalizeMergedAgent: failure exit (code 1) + PR merged → finalize (merged is authoritative)', () => {
+  const result = shouldFinalizeMergedAgent(1, () => true);
+  assert.equal(result, true);
+});
+
+test('shouldFinalizeMergedAgent: isMerged throwing is treated as not merged (best-effort)', () => {
+  const result = shouldFinalizeMergedAgent(null, () => { throw new Error('gh failed'); });
+  assert.equal(result, false);
 });
