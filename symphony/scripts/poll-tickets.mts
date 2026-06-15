@@ -55,6 +55,7 @@ import {
   type Deps as StateMachineDeps,
   type SpawnMode,
 } from './state-machine.mts';
+import { RATE_LIMIT_PATTERN, parseRateLimitResetTime } from './rate-limit.mts';
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -1443,8 +1444,6 @@ function saveLastObservedState(): void {
     console.warn(chalk.yellow(`[symphony] Failed to persist ${LAST_OBSERVED_FILE}: ${err}`));
   }
 }
-const RATE_LIMIT_PATTERN = /You've hit your limit|rate.?limit/i;
-
 // Set when a rate-limit is detected; the main loop sleeps until this time.
 let rateLimitPausedUntil: Date | null = null;
 
@@ -1455,46 +1454,6 @@ interface PausedSession {
   worktreePath: string;
 }
 let rateLimitPausedSessions: PausedSession[] = [];
-
-/**
- * Parse the reset time from a Claude Code rate-limit message.
- * Handles: "You've hit your limit · resets 6pm (Asia/Shanghai)", "resets 18:00 (UTC)", etc.
- * Returns the next occurrence of that clock time (today or tomorrow) + 5-minute buffer,
- * or null if parsing fails.
- */
-function parseRateLimitResetTime(logContent: string): Date | null {
-  const match = logContent.match(
-    /resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:\(([^)]+)\))?/i
-  );
-  if (!match) return null;
-
-  let hours = parseInt(match[1], 10);
-  const minutes = match[2] ? parseInt(match[2], 10) : 0;
-  const ampm = match[3]?.toLowerCase();
-  const timezone = match[4]?.trim() ?? 'UTC';
-
-  if (ampm === 'pm' && hours !== 12) hours += 12;
-  else if (ampm === 'am' && hours === 12) hours = 0;
-  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
-
-  try { Intl.DateTimeFormat(undefined, { timeZone: timezone }); } catch { return null; }
-
-  const now = new Date();
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone,
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-  });
-  const parts = formatter.formatToParts(now);
-  const get = (type: string) => parseInt(parts.find((p) => p.type === type)!.value, 10);
-
-  const currentSec = get('hour') * 3600 + get('minute') * 60 + get('second');
-  const resetSec = hours * 3600 + minutes * 60;
-  let diffSec = resetSec - currentSec;
-  if (diffSec <= 0) diffSec += 86400;
-
-  // Add 5-minute buffer after the reset time
-  return new Date(now.getTime() + diffSec * 1000 + 5 * 60 * 1000);
-}
 
 // ── Agent runner ──────────────────────────────────────────────────────────────
 
@@ -1670,8 +1629,13 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
         const suspicious = pauseMs !== null && pauseMs > SIX_HOURS_MS;
 
         if (!resetDate) {
-          log(chalk.red(`[${timestamp()}] ⛔ Rate limit hit: ${ticket.identifier} — could not parse reset time, stopping poller`));
-          process.exit(1);
+          // Banner matched but the reset time was unparseable. A single
+          // malformed log line must never bring down the whole poller
+          // (UP-831): mark this agent failed and keep polling other tickets.
+          const failures = (failureCounts.get(ticket.identifier) ?? 0) + 1;
+          failureCounts.set(ticket.identifier, failures);
+          log(chalk.yellow(`[${timestamp()}] ⚠ Rate limit banner matched but reset time unparseable for ${chalk.bold(ticket.identifier)} — treating as a normal failure, continuing to poll`));
+          log(chalk.red(`[${timestamp()}] ✗ Agent failed:`) + ` ${chalk.bold(ticket.identifier)} (exit ${code ?? signal}, attempt ${failures}/${MAX_RETRIES})`);
         } else if (suspicious) {
           // Likely a weekly-limit banner or stale parse; don't blind-pause for hours.
           log(chalk.yellow(`[${timestamp()}] ⚠ Suspicious reset time (>6h, parsed ${resetDate.toLocaleTimeString()}) — ignoring banner for ${chalk.bold(ticket.identifier)}`));
