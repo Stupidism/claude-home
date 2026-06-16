@@ -57,7 +57,7 @@ import {
   type Deps as StateMachineDeps,
   type SpawnMode,
 } from './state-machine.mts';
-import { RATE_LIMIT_PATTERN, parseRateLimitResetTime } from './rate-limit.mts';
+import { RATE_LIMIT_PATTERN, parseRateLimitResetTime, scanTailForRateLimit } from './rate-limit.mts';
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -980,6 +980,14 @@ const runningAgents = new Map<string, AgentEntry>();
  * ticket as "agent-free" while its work is in flight.
  */
 const adoptedAgents = new Map<string, { pid: number; worktreePath: string | null }>();
+/**
+ * Agent-log size (bytes) captured when each orphan was first adopted, keyed by
+ * ticket id. Survives the per-cycle `adoptedAgents.clear()` so that when an
+ * adopted agent is later found dead we can scan only the bytes it appended since
+ * adoption for a rate-limit banner (SY-66 adopted-agent completion handling) —
+ * the analogue of the owned exit handler's `logOffset`.
+ */
+const adoptedLogOffset = new Map<string, number>();
 let isShuttingDown = false;
 
 /** True if `identifier` has either a tracked or adopted agent in flight. */
@@ -2366,6 +2374,54 @@ function wipeStaleClaudeSession(identifier: string, recordedWorktree: string | n
   try { fs.rmSync(pointerFile, { force: true }); } catch { /* best-effort */ }
 }
 
+/**
+ * Completion handling for an adopted orphan agent that has just died (SY-66).
+ *
+ * Owned agents run a `child.on('exit')` handler; adopted agents (inherited from
+ * a previous poller via their pid file) have no such handle, so when one dies
+ * the only completion side-effect that the idempotent poll loop cannot recover
+ * on its own is the **rate-limit pause**: if the agent died because it hit the
+ * account-wide limit, nothing else would stop the poller from spawning the next
+ * ticket straight into the same wall. We therefore scan the bytes the agent
+ * appended since adoption and, on a banner, pause the whole poller — mirroring
+ * the owned exit handler.
+ *
+ * The other terminal transitions are already covered by the state machine on
+ * the next cycle, so they are deliberately NOT replicated here:
+ *  - Merging → Done: `handleMerging` re-checks `areAllPRsMerged` every cycle and
+ *    finalizes (UP-825 fast-path), agent or no agent.
+ *  - In Progress → Human Review: the agent self-transitions via submit-for-review;
+ *    if it died first, `handleInProgress` re-spawns (now an owned agent, so the
+ *    failure counter re-engages).
+ *
+ * Returns true if a rate-limit pause was set, so the caller can skip wiping the
+ * session pointer (the resume-after-pause path may still want it).
+ */
+function finalizeDeadAdoptedAgent(identifier: string): boolean {
+  const offset = adoptedLogOffset.get(identifier);
+  adoptedLogOffset.delete(identifier);
+  // No recorded offset → we never adopted this agent (stale pid file from long
+  // ago). Skip the scan so an old banner can't trigger a false pause.
+  if (offset === undefined) return false;
+
+  const agentLog = path.join(SYMPHONY_ROOT, 'logs', `symphony-${identifier}.log`);
+  let logContent: string;
+  try { logContent = fs.readFileSync(agentLog, 'utf8'); } catch { return false; }
+
+  const { hit, resetAt } = scanTailForRateLimit(logContent, offset);
+  if (!hit || !resetAt) return false;
+
+  const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+  if (resetAt.getTime() - Date.now() > SIX_HOURS_MS) {
+    // Likely a weekly-limit banner or a stale parse — don't blind-pause for hours.
+    log(chalk.yellow(`[${timestamp()}] ⚠ Adopted agent ${chalk.bold(identifier)} exited with a suspicious rate-limit reset (>6h) — ignoring`));
+    return false;
+  }
+  rateLimitPausedUntil = resetAt;
+  log(chalk.yellow(`[${timestamp()}] ⏸ Adopted agent ${chalk.bold(identifier)} hit the rate limit on exit — pausing poller until ${resetAt.toLocaleTimeString()}`));
+  return true;
+}
+
 async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
   const logsDir = path.join(SYMPHONY_ROOT, 'logs');
   if (!fs.existsSync(logsDir)) return;
@@ -2407,7 +2463,15 @@ async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
       if (wt) recordedWorktree = wt;
     } catch { fs.rmSync(filePath, { force: true }); wipeStaleClaudeSession(identifier); continue; }
     if (isNaN(pid)) { fs.rmSync(filePath, { force: true }); wipeStaleClaudeSession(identifier); continue; }
-    if (!isPidAlive(pid)) { fs.rmSync(filePath, { force: true }); wipeStaleClaudeSession(identifier, recordedWorktree); continue; }
+    if (!isPidAlive(pid)) {
+      // Adopted agent died — run completion handling (rate-limit pause) before
+      // tearing down. If it paused for rate limit, keep the session pointer so
+      // the post-pause resume can find it; otherwise wipe the stale session.
+      const pausedForRateLimit = finalizeDeadAdoptedAgent(identifier);
+      fs.rmSync(filePath, { force: true });
+      if (!pausedForRateLimit) wipeStaleClaudeSession(identifier, recordedWorktree);
+      continue;
+    }
     if (runningAgents.has(identifier)) continue;
 
     // PID reuse guard: confirm the live process is actually the run-ticket.sh
@@ -2442,7 +2506,23 @@ async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
 
     const worktreePath = recordedWorktree ?? findWorktreePathForIdentifier(identifier);
     adoptedAgents.set(identifier, { pid, worktreePath });
+    // Record the agent log's current size the first time we adopt this agent so
+    // that, if it later dies, finalizeDeadAdoptedAgent scans only what it wrote
+    // under our watch — not a stale banner from before the restart (SY-66).
+    if (!adoptedLogOffset.has(identifier)) {
+      const agentLog = path.join(logsDir, `symphony-${identifier}.log`);
+      let size = 0;
+      try { size = fs.statSync(agentLog).size; } catch { /* no log yet */ }
+      adoptedLogOffset.set(identifier, size);
+    }
     log(chalk.dim(`[${timestamp()}] ↩ Adopting orphan agent ${identifier} (PID ${pid}) — leaving its claude session intact`));
+  }
+
+  // Drop offset bookkeeping for any agent no longer adopted (died via the
+  // mismatch / unreadable-pid branches, which don't run finalizeDeadAdoptedAgent)
+  // so a stale offset can't bleed into a future adoption of the same ticket.
+  for (const id of [...adoptedLogOffset.keys()]) {
+    if (!adoptedAgents.has(id)) adoptedLogOffset.delete(id);
   }
 
   // ── Pass 2: rogue claude / node / bash by worktree-path match ─────────────

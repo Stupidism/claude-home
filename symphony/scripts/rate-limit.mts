@@ -13,6 +13,27 @@
 export const RATE_LIMIT_PATTERN = /You(?:'|’)ve hit your limit[^\r\n]*resets/i;
 
 /**
+ * Scan only the bytes written after `fromOffset` for a rate-limit banner.
+ *
+ * Used when an *adopted* orphan agent (one this poller did not spawn, so it has
+ * no `child.on('exit')` handler) is found dead: we record the agent log's size
+ * at adoption time and scan only what was appended since, so a stale banner from
+ * a previous run-ticket.sh invocation in the append-only log can't trigger a
+ * false pause (SY-66). Mirrors the owned exit handler's logOffset scan.
+ */
+export function scanTailForRateLimit(
+  logContent: string,
+  fromOffset = 0
+): { hit: boolean; resetAt: Date | null } {
+  const tail =
+    fromOffset > 0 && fromOffset <= logContent.length
+      ? logContent.slice(fromOffset)
+      : logContent;
+  if (!RATE_LIMIT_PATTERN.test(tail)) return { hit: false, resetAt: null };
+  return { hit: true, resetAt: parseRateLimitResetTime(tail) };
+}
+
+/**
  * Parse the reset time from a Claude Code rate-limit message.
  * Handles: "You've hit your limit · resets 6pm (Asia/Shanghai)", "resets 18:00 (UTC)", etc.
  * Returns the next occurrence of that clock time (today or tomorrow) + 5-minute buffer,
