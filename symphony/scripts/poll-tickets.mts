@@ -2265,7 +2265,7 @@ async function cleanupDoneWorktrees(activeIdentifiers: Set<string>, board: Board
       try {
         const result = child_process.spawnSync('git', ['status', '--porcelain'], { cwd: worktreePath, encoding: 'utf8' });
         const lines = (result.stdout ?? '').split('\n').map((l) => l.trim()).filter(Boolean);
-        const safeFiles = new Set(['.claude-session-id', 'node_modules']);
+        const safeFiles = new Set(['.claude-session-id', '.claude-session-restarts', 'node_modules']);
         const unexpected = lines.filter((l) => !safeFiles.has(l.replace(/^[? A-Z]+\s+/, '').trim()));
         if (unexpected.length > 0) continue;
       } catch { continue; }
