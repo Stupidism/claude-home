@@ -282,7 +282,10 @@ export AGENT_RUNTIME
 # NOT get the "context intact, continue where you left off" prompt — with
 # nothing to stand on the agent just churns and re-does work. (UP-839)
 SESSION_ID_FILE="${WORKTREE_PATH}/.claude-session-id"
-RESTART_COUNT_FILE="${WORKTREE_PATH}/.claude-session-restarts"
+# Restart counter lives under Symphony logs, NOT the worktree: it's runtime
+# bookkeeping, and a per-repo dotfile reads as dirty/untracked — it would block
+# cleanupDoneWorktrees or get swept into an agent's `git add -A` (Codex P2).
+RESTART_COUNT_FILE="${SYMPHONY_ROOT}/logs/session-restarts-${TICKET_ID}.count"
 CLAUDE_PROJECT_DIR="${HOME}/.claude/projects/$(echo "$WORKTREE_PATH" | tr '/' '-')"
 
 # Does the prior session's context survive a `--resume`?
@@ -324,6 +327,7 @@ fi
 # failures and alarm loudly rather than swallowing it silently. (UP-839)
 if [ "$RESUME_FAILED" = "1" ]; then
   RESTART_COUNT=$(( $(cat "$RESTART_COUNT_FILE" 2>/dev/null || echo 0) + 1 ))
+  mkdir -p "$(dirname "$RESTART_COUNT_FILE")"
   echo "$RESTART_COUNT" > "$RESTART_COUNT_FILE"
   echo "[run] ⚠ Could not resume session ${SESSION_ID} — its local context is gone; starting a new session (consecutive resume failures: ${RESTART_COUNT})." >&2
   if [ "$RESTART_COUNT" -ge 3 ]; then
