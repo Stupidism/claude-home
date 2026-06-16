@@ -275,6 +275,64 @@ export NEVER_USE_LANGUAGE="${NEVER_USE_LANGUAGE:-Korean or Japanese}"
 AGENT_RUNTIME="${AGENT_RUNTIME:-claude}"
 export AGENT_RUNTIME
 
+# ── Resolve session-resume strategy ─────────────────────────────────────────
+# Decide up front whether the prior session's context is recoverable. This
+# drives BOTH the CLI args (--resume vs --session-id, set in the claude branch
+# below) AND the prompt: a restart that silently opens an empty session must
+# NOT get the "context intact, continue where you left off" prompt — with
+# nothing to stand on the agent just churns and re-does work. (UP-839)
+SESSION_ID_FILE="${WORKTREE_PATH}/.claude-session-id"
+RESTART_COUNT_FILE="${WORKTREE_PATH}/.claude-session-restarts"
+CLAUDE_PROJECT_DIR="${HOME}/.claude/projects/$(echo "$WORKTREE_PATH" | tr '/' '-')"
+
+# Does the prior session's context survive a `--resume`?
+#   claude (default):        transcript jsonl at $CLAUDE_PROJECT_DIR/<id>.jsonl
+#   claude --remote-control: the conversation syncs to claude.ai; locally only
+#       ~/.claude/session-env/<id>/ remains (the project jsonl is NEVER
+#       written), so probe that dir instead — checking the jsonl path here is a
+#       guaranteed false negative that forces a fresh empty session every
+#       restart and discards all accumulated context.
+#   codex:                   no --resume plumbing at all — every invocation is
+#       its own session, so context never carries over.
+session_context_survives() {
+  local id="$1"
+  if [ "$AGENT_RUNTIME" = "codex" ]; then
+    return 1
+  elif [ "${REMOTE_CONTROL:-}" = "true" ]; then
+    [ -d "${HOME}/.claude/session-env/${id}" ]
+  else
+    [ -f "${CLAUDE_PROJECT_DIR}/${id}.jsonl" ]
+  fi
+}
+
+START_NEW_SESSION=0
+RESUME_FAILED=0
+if [ "$FRESH" = "--fresh" ] || [ ! -f "$SESSION_ID_FILE" ]; then
+  START_NEW_SESSION=1
+else
+  SESSION_ID=$(cat "$SESSION_ID_FILE")
+  if ! session_context_survives "$SESSION_ID"; then
+    # Pointer file exists but the session it names can no longer be resumed —
+    # this is the broken-resume case, distinct from a legitimate first run.
+    START_NEW_SESSION=1
+    RESUME_FAILED=1
+  fi
+fi
+
+# Tripwire: a resume that keeps failing across restarts means the resume chain
+# is broken and the agent loses all context every cycle. Count consecutive
+# failures and alarm loudly rather than swallowing it silently. (UP-839)
+if [ "$RESUME_FAILED" = "1" ]; then
+  RESTART_COUNT=$(( $(cat "$RESTART_COUNT_FILE" 2>/dev/null || echo 0) + 1 ))
+  echo "$RESTART_COUNT" > "$RESTART_COUNT_FILE"
+  echo "[run] ⚠ Could not resume session ${SESSION_ID} — its local context is gone; starting a new session (consecutive resume failures: ${RESTART_COUNT})." >&2
+  if [ "$RESTART_COUNT" -ge 3 ]; then
+    echo "[run] ✗ ALARM: ${RESTART_COUNT} consecutive resume failures for ${TICKET_ID} (REMOTE_CONTROL=${REMOTE_CONTROL:-false}, runtime=${AGENT_RUNTIME}). The session-resume chain is likely broken — the agent keeps losing context on every restart. Investigate run-ticket.sh session detection." >&2
+  fi
+elif [ "$START_NEW_SESSION" = "0" ]; then
+  rm -f "$RESTART_COUNT_FILE"
+fi
+
 case "$FRESH" in
   --fresh)
     export RUN_MODE="fresh start (from origin/${DEFAULT_BRANCH})"
@@ -284,7 +342,16 @@ case "$FRESH" in
     PROMPT="$(envsubst < "$SKILLS_ROOT/resume/feedback.md")"
     ;;
   *)
-    PROMPT="$(envsubst < "$SKILLS_ROOT/resume/continue.md")"
+    if [ "$START_NEW_SESSION" = "1" ]; then
+      # Poller restart with no recoverable context. The "context intact,
+      # continue" prompt would strand the empty session, so use the full
+      # workflow prompt instead — its In Progress route recovers state from
+      # the workpad rather than assuming prior context. (UP-839)
+      export RUN_MODE="resumed without prior context — recover state from the workpad"
+      PROMPT="$(envsubst < "$WORKFLOW_FILE")"
+    else
+      PROMPT="$(envsubst < "$SKILLS_ROOT/resume/continue.md")"
+    fi
     ;;
 esac
 
@@ -311,32 +378,8 @@ if [ "$AGENT_RUNTIME" = "codex" ]; then
   fi
   AGENT_EXIT=$?
 else
-  SESSION_ID_FILE="${WORKTREE_PATH}/.claude-session-id"
-
-  # Claude derives the on-disk project dir from the worktree path by replacing
-  # every "/" with "-" and prepending "-". The session jsonl lives at
-  # ~/.claude/projects/<project-dir>/<session-id>.jsonl. Claude may garbage-collect
-  # that jsonl (or the whole project dir) without touching our pointer file, in
-  # which case `claude --resume <id>` prints "No conversation found" and exits 0
-  # immediately. Detect that case here and fall back to creating a new session.
-  CLAUDE_PROJECT_DIR="${HOME}/.claude/projects/$(echo "$WORKTREE_PATH" | tr '/' '-')"
-
-  session_jsonl_exists() {
-    local id="$1"
-    [ -f "${CLAUDE_PROJECT_DIR}/${id}.jsonl" ]
-  }
-
-  START_NEW_SESSION=0
-  if [ "$FRESH" = "--fresh" ] || [ ! -f "$SESSION_ID_FILE" ]; then
-    START_NEW_SESSION=1
-  else
-    SESSION_ID=$(cat "$SESSION_ID_FILE")
-    if ! session_jsonl_exists "$SESSION_ID"; then
-      echo "[run] Pointer file references session ${SESSION_ID} but ${CLAUDE_PROJECT_DIR}/${SESSION_ID}.jsonl is gone — starting a new session."
-      START_NEW_SESSION=1
-    fi
-  fi
-
+  # Session strategy (START_NEW_SESSION / SESSION_ID) was resolved above — it
+  # also drove the prompt choice. Translate that decision into CLI args here.
   SESSION_ARGS=()
   if [ "$START_NEW_SESSION" = "1" ]; then
     SESSION_ID=$(python3 -c "import uuid; print(uuid.uuid4())")
