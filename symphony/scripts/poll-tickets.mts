@@ -57,7 +57,7 @@ import {
   type Deps as StateMachineDeps,
   type SpawnMode,
 } from './state-machine.mts';
-import { RATE_LIMIT_PATTERN, parseRateLimitResetTime } from './rate-limit.mts';
+import { RATE_LIMIT_PATTERN, parseRateLimitResetTime, scanTailForRateLimit } from './rate-limit.mts';
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -854,6 +854,13 @@ function worktreeOccupiedBy(issue: Issue, board: BoardConfig): string | null {
     if (otherId === issue.identifier) continue;
     if (other.worktreePath === worktreePath) return otherId;
   }
+  // SY-66: adopted-orphan sessions still own their worktree across poller
+  // restarts. Without this, a second ticket would treat the worktree as free
+  // and spawn into it, racing against the adopted agent's git operations.
+  for (const [otherId, other] of adoptedAgents) {
+    if (otherId === issue.identifier) continue;
+    if (other.worktreePath && other.worktreePath === worktreePath) return otherId;
+  }
   return null;
 }
 
@@ -965,7 +972,31 @@ interface AgentEntry {
 }
 
 const runningAgents = new Map<string, AgentEntry>();
+/**
+ * Orphan agents adopted from a previous poller (SY-66). The current poller
+ * never had a `child_process` handle for these PIDs, so they live in a
+ * separate map from `runningAgents`. They DO count toward `MAX_CONCURRENT`
+ * and `isAgentActive` so we don't oversubscribe slots or treat an adopted
+ * ticket as "agent-free" while its work is in flight.
+ */
+const adoptedAgents = new Map<string, { pid: number; worktreePath: string | null }>();
+/**
+ * Agent-log size (bytes) captured when each orphan was first adopted, keyed by
+ * ticket id. Survives the per-cycle `adoptedAgents.clear()` so that when an
+ * adopted agent is later found dead we can scan only the bytes it appended since
+ * adoption for a rate-limit banner (SY-66 adopted-agent completion handling) —
+ * the analogue of the owned exit handler's `logOffset`.
+ */
+const adoptedLogOffset = new Map<string, number>();
 let isShuttingDown = false;
+
+/** True if `identifier` has either a tracked or adopted agent in flight. */
+function isAgentActive(identifier: string): boolean {
+  return runningAgents.has(identifier) || adoptedAgents.has(identifier);
+}
+function activeAgentCount(): number {
+  return runningAgents.size + adoptedAgents.size;
+}
 type DashboardState = 'todo' | 'blocked' | 'inProgress' | 'humanReview' | 'merging' | 'rework';
 interface DashboardRow { ticket: Issue; board: BoardConfig; state: DashboardState }
 let lastSnapshot: DashboardRow[] = [];
@@ -1050,7 +1081,7 @@ function buildDashboard(updatedAt: string): string {
   if (!rows.length) table.push([chalk.dim('(none)'), chalk.dim('—'), chalk.dim('—'), chalk.dim('—'), chalk.dim('—')]);
 
   let out = table.toString();
-  out += `\n  ${chalk.dim(`Updated ${updatedAt}  •  agents ${runningAgents.size}/${MAX_CONCURRENT}  •  boards: ${boards.map((b) => b.ticketPrefix).join(', ')}  •  next poll in ${POLL_INTERVAL_MS / 1000}s`)}`;
+  out += `\n  ${chalk.dim(`Updated ${updatedAt}  •  agents ${activeAgentCount()}/${MAX_CONCURRENT}  •  boards: ${boards.map((b) => b.ticketPrefix).join(', ')}  •  next poll in ${POLL_INTERVAL_MS / 1000}s`)}`;
   out += `\n  ${chalk.dim(`Type ${chalk.white('resume <id>')} / ${chalk.white('kill <id>')} / ${chalk.white('restart <id>')}  •  ${chalk.white('help')} for commands`)}`;
   return out;
 }
@@ -1147,7 +1178,7 @@ function writeHtmlDashboard(updatedAt: string): void {
   const html = buildDashboardHtml({
     rows: htmlRows,
     updatedAt,
-    runningAgents: runningAgents.size,
+    runningAgents: activeAgentCount(),
     maxConcurrent: MAX_CONCURRENT,
     boards: boards.map((b) => b.ticketPrefix),
     pollIntervalSeconds: Math.round(POLL_INTERVAL_MS / 1000),
@@ -1252,6 +1283,32 @@ async function killAgent(identifier: string): Promise<void> {
   const upper = identifier.toUpperCase();
   const agent = runningAgents.get(upper);
   if (!agent) {
+    // Adopted-orphan path (SY-66): no child_process handle, so signal the
+    // pid group directly. Best-effort — escalation to SIGKILL after a short
+    // grace lets nested claude / pty-wrapper / nx daemons flush state.
+    const adopted = adoptedAgents.get(upper);
+    if (adopted && isPidAlive(adopted.pid)) {
+      log(chalk.yellow(`[${timestamp()}] ✋ Stopping adopted agent ${chalk.bold(upper)} (PID ${adopted.pid})`));
+      try { process.kill(-adopted.pid, 'SIGTERM'); } catch {
+        try { process.kill(adopted.pid, 'SIGTERM'); } catch { /* gone */ }
+      }
+      // Give the tree ~2s to exit cleanly; the next poll cycle will rebuild
+      // adoptedAgents from the pid files (so this entry drops out on its own
+      // once the PID dies).
+      for (let i = 0; i < 4; i++) {
+        await sleep(500);
+        if (!isPidAlive(adopted.pid)) break;
+      }
+      if (isPidAlive(adopted.pid)) {
+        try { process.kill(-adopted.pid, 'SIGKILL'); } catch {
+          try { process.kill(adopted.pid, 'SIGKILL'); } catch { /* gone */ }
+        }
+      }
+      adoptedAgents.delete(upper);
+      const pidFile = path.join(SYMPHONY_ROOT, 'logs', `agent-pid-${upper}.pid`);
+      fs.rmSync(pidFile, { force: true });
+      return;
+    }
     log(chalk.yellow(`[${timestamp()}] ⏭ No running agent for ${upper}`));
     return;
   }
@@ -1304,7 +1361,10 @@ async function killAgent(identifier: string): Promise<void> {
  */
 async function restartAgent(identifier: string): Promise<void> {
   const upper = identifier.toUpperCase();
-  if (runningAgents.has(upper)) {
+  // SY-66: include adopted-orphan sessions — without this, `restart <id>` on
+  // an adopted session would skip the kill and forceResumeTicket → spawnAgent
+  // would see the survivor pid file and short-circuit, making restart a no-op.
+  if (isAgentActive(upper)) {
     await killAgent(upper);
   }
   await forceResumeTicket(upper);
@@ -1633,7 +1693,11 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
     { stdio, env, detached: false }
   );
 
-  if (child.pid !== undefined) fs.writeFileSync(activePidFile, String(child.pid));
+  // SY-66: pid file content is `<pid>\n<worktree>` so the next poller can
+  // pick up the exact worktree this agent was spawned into when adopting,
+  // even if findWorktreePathForIdentifier would return a stale leftover dir.
+  // Readers handle a single-line legacy file too.
+  if (child.pid !== undefined) fs.writeFileSync(activePidFile, `${child.pid}\n${worktreePath}\n`);
 
   runningAgents.set(ticket.identifier, {
     proc: child,
@@ -2193,7 +2257,7 @@ async function cleanupDoneWorktrees(activeIdentifiers: Set<string>, board: Board
       const match = entry.match(prefixRe) ?? entry.match(fallbackRe);
       if (!match) continue;
       const identifier = match[1].toUpperCase();
-      if (activeIdentifiers.has(identifier) || runningAgents.has(identifier)) continue;
+      if (activeIdentifiers.has(identifier) || isAgentActive(identifier)) continue;
 
       const worktreePath = path.join(worktreesDir, entry);
       if (!fs.statSync(worktreePath).isDirectory()) continue;
@@ -2243,17 +2307,119 @@ function liveAgentWorktreePaths(): string[] {
   return [...runningAgents.values()].map((a) => a.worktreePath);
 }
 
-function killOrphanedNxDaemons(): void {
-  // Shutdown caller: every agent is being torn down, so any nx daemon under
-  // a Symphony-managed worktree / repo root is fair game. The prefix scope
-  // is the only thing protecting other workspaces' daemons.
-  const rows = snapshotPsByCommand();
-  const pids = findNxDaemonPids(rows, symphonyManagedPathPrefixes());
-  if (pids.length === 0) return;
-  for (const pid of pids) {
-    try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
+/**
+ * Locate the worktree directory for a ticket identifier by scanning every
+ * configured `worktreesDir` for a folder name matching `feat-<id>-…`. Used by
+ * orphan cleanup to clean stale `.claude-session-id` pointers + jsonl files
+ * for tickets whose agent has died. Returns the first match or null.
+ */
+function findWorktreePathForIdentifier(identifier: string): string | null {
+  const home = process.env['HOME'] ?? '~';
+  const prefix = `feat-${identifier}-`;
+  const seen = new Set<string>();
+  for (const board of boards) {
+    for (const repo of board.repos) {
+      const dir = repo.worktreesDir.replace(/^~/, home);
+      if (seen.has(dir)) continue;
+      seen.add(dir);
+      try {
+        for (const name of fs.readdirSync(dir)) {
+          if (name === prefix.slice(0, -1) || name.startsWith(prefix)) {
+            return path.join(dir, name);
+          }
+        }
+      } catch { /* worktrees dir missing — fine */ }
+    }
   }
-  log(chalk.dim(`[${timestamp()}] ⏹ Sent SIGTERM to ${pids.length} nx daemon process(es)`));
+  return null;
+}
+
+/**
+ * Erase the previous claude session for a dead orphan agent: remove the
+ * `~/.claude/projects/<encoded-worktree>/<session-id>.jsonl` jsonl plus the
+ * `.claude-session-id` pointer file inside the worktree. Keeps Claude Desktop
+ * from accumulating stale remote-control entries when a fresh session is
+ * spawned on the next poll cycle (SY-66). Best-effort — never throws.
+ *
+ * Only called for *dead* orphan PIDs. Adopted (alive) agents keep their
+ * pointer + jsonl intact so their conversation history survives across
+ * poller restarts.
+ */
+function wipeStaleClaudeSession(identifier: string, recordedWorktree: string | null = null): void {
+  // Prefer the worktree path captured at spawn time (SY-66): the pid file
+  // records it explicitly, so we don't ambiguously match the first
+  // `feat-<id>-*` directory on disk when stale leftovers from a previous
+  // title/slug exist.
+  const worktreePath = recordedWorktree ?? findWorktreePathForIdentifier(identifier);
+  if (!worktreePath) return;
+  const pointerFile = path.join(worktreePath, '.claude-session-id');
+  let sessionId: string | null = null;
+  try {
+    sessionId = fs.readFileSync(pointerFile, 'utf8').trim();
+    if (!sessionId) sessionId = null;
+  } catch { /* no pointer — nothing to wipe */ }
+  // Gate the rm on a strict UUID shape (matches the `uuid.uuid4()` value
+  // run-ticket.sh writes). A crafted pointer file with `../` could otherwise
+  // redirect the deletion outside the project dir.
+  const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+  if (sessionId && UUID_RE.test(sessionId)) {
+    const home = process.env['HOME'] ?? '~';
+    const projectDir = path.join(home, '.claude', 'projects', worktreePath.replace(/\//g, '-'));
+    const jsonl = path.join(projectDir, `${sessionId}.jsonl`);
+    try {
+      fs.rmSync(jsonl, { force: true });
+      log(chalk.dim(`[${timestamp()}] ⏹ Wiped stale session ${sessionId.slice(0, 8)}… for ${identifier}`));
+    } catch { /* best-effort */ }
+  }
+  try { fs.rmSync(pointerFile, { force: true }); } catch { /* best-effort */ }
+}
+
+/**
+ * Completion handling for an adopted orphan agent that has just died (SY-66).
+ *
+ * Owned agents run a `child.on('exit')` handler; adopted agents (inherited from
+ * a previous poller via their pid file) have no such handle, so when one dies
+ * the only completion side-effect that the idempotent poll loop cannot recover
+ * on its own is the **rate-limit pause**: if the agent died because it hit the
+ * account-wide limit, nothing else would stop the poller from spawning the next
+ * ticket straight into the same wall. We therefore scan the bytes the agent
+ * appended since adoption and, on a banner, pause the whole poller — mirroring
+ * the owned exit handler.
+ *
+ * The other terminal transitions are already covered by the state machine on
+ * the next cycle, so they are deliberately NOT replicated here:
+ *  - Merging → Done: `handleMerging` re-checks `areAllPRsMerged` every cycle and
+ *    finalizes (UP-825 fast-path), agent or no agent.
+ *  - In Progress → Human Review: the agent self-transitions via submit-for-review;
+ *    if it died first, `handleInProgress` re-spawns (now an owned agent, so the
+ *    failure counter re-engages).
+ *
+ * Returns true if a rate-limit pause was set, so the caller can skip wiping the
+ * session pointer (the resume-after-pause path may still want it).
+ */
+function finalizeDeadAdoptedAgent(identifier: string): boolean {
+  const offset = adoptedLogOffset.get(identifier);
+  adoptedLogOffset.delete(identifier);
+  // No recorded offset → we never adopted this agent (stale pid file from long
+  // ago). Skip the scan so an old banner can't trigger a false pause.
+  if (offset === undefined) return false;
+
+  const agentLog = path.join(SYMPHONY_ROOT, 'logs', `symphony-${identifier}.log`);
+  let logContent: string;
+  try { logContent = fs.readFileSync(agentLog, 'utf8'); } catch { return false; }
+
+  const { hit, resetAt } = scanTailForRateLimit(logContent, offset);
+  if (!hit || !resetAt) return false;
+
+  const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+  if (resetAt.getTime() - Date.now() > SIX_HOURS_MS) {
+    // Likely a weekly-limit banner or a stale parse — don't blind-pause for hours.
+    log(chalk.yellow(`[${timestamp()}] ⚠ Adopted agent ${chalk.bold(identifier)} exited with a suspicious rate-limit reset (>6h) — ignoring`));
+    return false;
+  }
+  rateLimitPausedUntil = resetAt;
+  log(chalk.yellow(`[${timestamp()}] ⏸ Adopted agent ${chalk.bold(identifier)} hit the rate limit on exit — pausing poller until ${resetAt.toLocaleTimeString()}`));
+  return true;
 }
 
 async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
@@ -2262,41 +2428,114 @@ async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
 
   // ── Pass 1: PID files left behind by previous pollers ─────────────────────
   //
-  // Any pid-file PID still alive that we don't own is an orphan from a
-  // previous poller (SIGKILL'd / OOM'd / crashed). Kill the whole process
-  // group — bash from run-ticket.sh is a session leader (see setsid trampoline
-  // in run-ticket.sh) so the negative-PID form reaches claude + descendants.
-  // Done-state gating was removed: orphans in any ticket state are reclaimed
-  // because their original poller no longer owns them and they accumulate
-  // forever otherwise (UP-789).
+  // Pre-SY-66 behavior was to SIGTERM every alive orphan PID. That destroyed
+  // working sessions whenever the user restarted the poller. We now *adopt*
+  // any alive orphan: the agent keeps running, its pid file stays, and the
+  // alive-pid short-circuit in `spawnAgent` prevents a duplicate spawn on the
+  // first poll cycle. Only truly dead pids get wiped — and for those we also
+  // delete the matching `.claude-session-id` + `~/.claude/projects/<dir>/<sid>.jsonl`
+  // so Claude Desktop doesn't accumulate stale remote-control entries when a
+  // fresh session is spawned.
+  // Rebuild the adopted-agents map from scratch each cycle so dead PIDs drop
+  // out automatically — keeps MAX_CONCURRENT slot accounting honest without a
+  // separate exit handler we can't attach to a process we don't own.
+  adoptedAgents.clear();
+  // Snapshot ps once so we can verify each adopted PID's identity (PID reuse
+  // can hand an unrelated process the slot otherwise — a stale pid file plus
+  // a wrapping pid counter equals a false adoption).
+  const psRows = snapshotPsByCommand();
+  const psByPid = new Map(psRows.map((r) => [r.pid, r.command]));
   const files = fs.readdirSync(logsDir).filter((f) => f.startsWith('agent-pid-') && f.endsWith('.pid'));
   for (const file of files) {
     const match = file.match(/^agent-pid-([A-Z]+-\d+)\.pid$/i);
     if (!match) continue;
     const identifier = match[1].toUpperCase();
     const filePath = path.join(logsDir, file);
+    // Pid file is `<pid>\n<worktree>\n` (SY-66) — fall back to a single-line
+    // legacy file (pid only) by leaving recordedWorktree null and letting
+    // findWorktreePathForIdentifier guess from disk.
     let pid: number;
-    try { pid = parseInt(fs.readFileSync(filePath, 'utf8').trim(), 10); } catch { fs.rmSync(filePath, { force: true }); continue; }
-    if (isNaN(pid)) { fs.rmSync(filePath, { force: true }); continue; }
-    if (!isPidAlive(pid)) { fs.rmSync(filePath, { force: true }); continue; }
+    let recordedWorktree: string | null = null;
+    try {
+      const contents = fs.readFileSync(filePath, 'utf8').split('\n');
+      pid = parseInt(contents[0]?.trim() ?? '', 10);
+      const wt = contents[1]?.trim();
+      if (wt) recordedWorktree = wt;
+    } catch { fs.rmSync(filePath, { force: true }); wipeStaleClaudeSession(identifier); continue; }
+    if (isNaN(pid)) { fs.rmSync(filePath, { force: true }); wipeStaleClaudeSession(identifier); continue; }
+    if (!isPidAlive(pid)) {
+      // Adopted agent died — run completion handling (rate-limit pause) before
+      // tearing down. If it paused for rate limit, keep the session pointer so
+      // the post-pause resume can find it; otherwise wipe the stale session.
+      const pausedForRateLimit = finalizeDeadAdoptedAgent(identifier);
+      fs.rmSync(filePath, { force: true });
+      if (!pausedForRateLimit) wipeStaleClaudeSession(identifier, recordedWorktree);
+      continue;
+    }
     if (runningAgents.has(identifier)) continue;
 
-    log(chalk.dim(`[${timestamp()}] ⏹ Killing orphan agent group for ${identifier} (PID ${pid})`));
-    try { process.kill(-pid, 'SIGTERM'); } catch {
-      try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
+    // PID reuse guard: confirm the live process is actually the run-ticket.sh
+    // wrapper for *this* ticket before adopting. Without this, a pid file
+    // whose original bash exited and whose PID got recycled by the OS to an
+    // unrelated process would falsely consume a concurrency slot until the
+    // imposter exits. Skipped entirely when the ps snapshot itself failed
+    // (psRows empty) — in that degraded mode we'd misclassify every alive
+    // session as a mismatch and destructively wipe its claude history.
+    if (psRows.length > 0) {
+      const cmd = psByPid.get(pid) ?? '';
+      // Accept the bash wrapper *or* a direct `claude --resume <session>`
+      // (the rate-limit recovery path spawns claude itself and writes the
+      // pid file with that PID — see the rateLimitPausedSessions loop).
+      // Reading the recorded session id lets us still reject PID reuse for
+      // resumed agents.
+      const runTicketRe = new RegExp(`\\brun-ticket\\.sh\\s+${identifier}\\s`);
+      let matched = runTicketRe.test(cmd);
+      if (!matched && recordedWorktree) {
+        try {
+          const sid = fs.readFileSync(path.join(recordedWorktree, '.claude-session-id'), 'utf8').trim();
+          if (sid && cmd.includes(sid)) matched = true;
+        } catch { /* no pointer — can't verify, fall through to mismatch */ }
+      }
+      if (!matched) {
+        log(chalk.dim(`[${timestamp()}] ⏹ pid file for ${identifier} (PID ${pid}) doesn't match run-ticket.sh / claude --resume — treating as dead`));
+        fs.rmSync(filePath, { force: true });
+        wipeStaleClaudeSession(identifier, recordedWorktree);
+        continue;
+      }
     }
-    fs.rmSync(filePath, { force: true });
+
+    const worktreePath = recordedWorktree ?? findWorktreePathForIdentifier(identifier);
+    adoptedAgents.set(identifier, { pid, worktreePath });
+    // Record the agent log's current size the first time we adopt this agent so
+    // that, if it later dies, finalizeDeadAdoptedAgent scans only what it wrote
+    // under our watch — not a stale banner from before the restart (SY-66).
+    if (!adoptedLogOffset.has(identifier)) {
+      const agentLog = path.join(logsDir, `symphony-${identifier}.log`);
+      let size = 0;
+      try { size = fs.statSync(agentLog).size; } catch { /* no log yet */ }
+      adoptedLogOffset.set(identifier, size);
+    }
+    log(chalk.dim(`[${timestamp()}] ↩ Adopting orphan agent ${identifier} (PID ${pid}) — leaving its claude session intact`));
+  }
+
+  // Drop offset bookkeeping for any agent no longer adopted (died via the
+  // mismatch / unreadable-pid branches, which don't run finalizeDeadAdoptedAgent)
+  // so a stale offset can't bleed into a future adoption of the same ticket.
+  for (const id of [...adoptedLogOffset.keys()]) {
+    if (!adoptedAgents.has(id)) adoptedLogOffset.delete(id);
   }
 
   // ── Pass 2: rogue claude / node / bash by worktree-path match ─────────────
   //
   // If a poller crashed before writing the pid file, the pid-file pass misses
   // those PIDs. Walk every process on the system and match against the
-  // configured worktrees roots so
-  // we catch leftover `claude`, `python3 pty-wrapper.py`, `bash run-ticket.sh`,
-  // and nested tool subprocesses by their argv. Skip anything the live
-  // runningAgents map already manages (its descendants share the same path).
-  const rows = snapshotPsByCommand();
+  // configured worktrees roots so we catch leftover `claude`,
+  // `python3 pty-wrapper.py`, `bash run-ticket.sh`, and nested tool
+  // subprocesses by their argv. Skip anything the live `runningAgents` map
+  // already manages, and anything whose argv references a worktree that an
+  // *adopted* pid-file agent owns — its descendants share the same path and
+  // would otherwise be reaped by Pass 2.
+  const rows = psRows;
   const prefixes = boards
     .flatMap((b) => b.repos)
     .map((repo) => repo.worktreesDir.replace(/^~/, process.env['HOME'] ?? '~'))
@@ -2305,12 +2544,13 @@ async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
   for (const { proc } of runningAgents.values()) {
     if (proc.pid !== undefined) skip.add(proc.pid);
   }
-  // Exclude every PID whose argv references a currently-tracked agent's
-  // worktree. The descendants of a live bash/python/claude tree share the
-  // worktree path with their ancestor, so a plain PID skip-set would still
-  // let Pass 2 reap them. Without this filter we'd kill the agent currently
-  // running this very session on the first poll cycle.
-  const liveTreePaths = liveAgentWorktreePaths();
+  for (const { pid } of adoptedAgents.values()) skip.add(pid);
+  // Worktree paths whose process trees must survive Pass 2 — both the
+  // poller-tracked agents and the adopted orphans from Pass 1.
+  const liveTreePaths = [
+    ...liveAgentWorktreePaths(),
+    ...[...adoptedAgents.values()].map((a) => a.worktreePath).filter((p): p is string => p !== null),
+  ];
   const isUnderLiveAgent = (cmd: string): boolean =>
     liveTreePaths.some((p) => cmd.includes(p));
   const orphans = findOrphanPidsByWorktreePrefix(rows, prefixes, skip)
@@ -2326,11 +2566,15 @@ async function cleanupOrphanedAgentsByPidFiles(): Promise<void> {
 
   // ── Pass 3: nx daemons — always detached, never share a PGID ──────────────
   //
-  // Reuse the same ps snapshot. AC 2 requires explicit cleanup even when no
-  // poller-tracked agent matched, because nx daemons survive long past the
-  // node process that forked them. Scope to Symphony-managed paths so we
-  // don't reap an unrelated workspace's daemon that the developer also runs.
-  const nxPids = findNxDaemonPids(rows, symphonyManagedPathPrefixes());
+  // Reuse the same ps snapshot. nx daemons survive long past the node process
+  // that forked them, so explicit cleanup is the only way to stop stale ones.
+  // Skip daemons whose argv references an adopted (or tracked) worktree so we
+  // don't kill an nx daemon that an adopted agent is actively using.
+  const nxPids = findNxDaemonPids(rows, symphonyManagedPathPrefixes())
+    .filter((pid) => {
+      const row = rows.find((r) => r.pid === pid);
+      return !row || !isUnderLiveAgent(row.command);
+    });
   if (nxPids.length > 0) {
     log(chalk.dim(`[${timestamp()}] ⏹ Stopping ${nxPids.length} stale nx daemon(s)`));
     for (const pid of nxPids) {
@@ -2372,6 +2616,17 @@ async function poll(): Promise<void> {
   const allBlocked: { ticket: Issue; board: BoardConfig }[] = [];
   const allSnapshot: DashboardRow[] = [];
   const allActiveIdentifiers = new Set<string>();
+  // Identifiers whose agent should still be running (InProgress + Merging),
+  // aggregated across every board this poll cycle. Used after the board loop
+  // to sweep adopted-orphan agents whose tickets are no longer in any active
+  // state — even when the ticket disappeared from this board's queried states
+  // entirely (e.g. moved to Done / Backlog / dropped from the board).
+  const allInProgressOrMergingIds = new Set<string>();
+  // Ticket prefixes for boards whose ticket fetch completed without throwing
+  // this cycle. The adopted-agent sweep is scoped to identifiers belonging
+  // to these boards so a transient failure on board B doesn't kill adopted
+  // agents owned by board B just because board A reported no active work.
+  const fetchedBoardPrefixes = new Set<string>();
 
   for (const board of boards) {
     let todoTickets: Issue[], inProgressTickets: Issue[], humanReviewTickets: Issue[], mergingTickets: Issue[], reworkTickets: Issue[], cancelledTickets: Issue[];
@@ -2401,8 +2656,12 @@ async function poll(): Promise<void> {
       continue;
     }
 
+    fetchedBoardPrefixes.add(board.ticketPrefix.toUpperCase());
     for (const t of [...todoTickets, ...inProgressTickets, ...humanReviewTickets, ...mergingTickets, ...reworkTickets]) {
       allActiveIdentifiers.add(t.identifier);
+    }
+    for (const t of [...inProgressTickets, ...mergingTickets]) {
+      allInProgressOrMergingIds.add(t.identifier);
     }
 
     // Kill agents whose tickets moved out of active states
@@ -2418,7 +2677,6 @@ async function poll(): Promise<void> {
         agent.proc.kill('SIGTERM');
       }
     }
-
     // All per-state ticket handling lives in state-machine.mts. We just build a
     // deps object that wraps the poller's I/O + introspection and let
     // processTicket() decide what side effect to run.
@@ -2447,8 +2705,8 @@ async function poll(): Promise<void> {
       hasNewPRReviewSince,
       spawnNotifyReview,
       addLabel,
-      isAgentRunning: (id) => runningAgents.has(id),
-      agentSlotsAvailable: () => Math.max(0, MAX_CONCURRENT - runningAgents.size),
+      isAgentRunning: (id) => isAgentActive(id),
+      agentSlotsAvailable: () => Math.max(0, MAX_CONCURRENT - activeAgentCount()),
       failureCountFor: (id) => failureCounts.get(id) ?? 0,
       resetFailureCount: (id) => { failureCounts.set(id, 0); },
       worktreeOccupiedBy,
@@ -2542,10 +2800,31 @@ async function poll(): Promise<void> {
     await cleanupDoneWorktrees(allActiveIdentifiers, board);
   }
 
+  // Global adopted-orphan sweep (SY-66): any adopted agent whose ticket is
+  // not in InProgress / Merging across *any* board should be terminated.
+  // Done so even tickets that left the queried state windows (Done /
+  // Backlog / dropped) eventually release their concurrency slot. Skipped
+  // when no boards reported successfully this cycle so a transient API
+  // failure doesn't wipe the whole board.
+  if (fetchedBoardPrefixes.size > 0) {
+    for (const identifier of [...adoptedAgents.keys()]) {
+      const prefix = identifier.split('-')[0]?.toUpperCase() ?? '';
+      // Skip identifiers owned by a board that didn't fetch successfully
+      // this cycle — `allInProgressOrMergingIds` would be empty for that
+      // board, so the sweep would otherwise mistake transient API failure
+      // for "ticket no longer active" and kill a live session.
+      if (!fetchedBoardPrefixes.has(prefix)) continue;
+      if (!allInProgressOrMergingIds.has(identifier)) {
+        log(chalk.dim(`[${timestamp()}] ⏹ ${identifier} no longer active (adopted) — stopping agent`));
+        void killAgent(identifier);
+      }
+    }
+  }
+
   lastSnapshot = allSnapshot;
   renderDashboard();
 
-  if (runningAgents.size >= MAX_CONCURRENT) return;
+  if (activeAgentCount() >= MAX_CONCURRENT) return;
 
   // Spawn new agents for todo tickets — delegate per-ticket to processTicket('todo').
   // Done in a second pass after Human Review / Merging / etc. so freed slots are
@@ -2553,8 +2832,8 @@ async function poll(): Promise<void> {
   // handler run above; here we just want fresh Todos.
   for (const { ticket, board } of allEligible) {
     if (lastKnownState.get(ticket.identifier) !== 'todo') continue; // skip inProgress entries
-    if (runningAgents.has(ticket.identifier)) continue;
-    if (runningAgents.size >= MAX_CONCURRENT) break;
+    if (isAgentActive(ticket.identifier)) continue;
+    if (activeAgentCount() >= MAX_CONCURRENT) break;
     // Validate runtime before claiming the ticket. If we waited until spawnAgent
     // throws, handleTodo would have already moved it to In Progress, leaving a
     // typo'd ticket stuck with no running agent.
@@ -2571,8 +2850,8 @@ async function poll(): Promise<void> {
       checkHumanReviewApproval, postComment, spawnAIReview, isAiReviewEnabled,
       getOpenPRUrl, getPRHeadSha, getAiReviewStatus, postAiReviewStatus, hasReviewForSha,
       hasNewPRReviewSince, spawnNotifyReview, addLabel,
-      isAgentRunning: (id) => runningAgents.has(id),
-      agentSlotsAvailable: () => Math.max(0, MAX_CONCURRENT - runningAgents.size),
+      isAgentRunning: (id) => isAgentActive(id),
+      agentSlotsAvailable: () => Math.max(0, MAX_CONCURRENT - activeAgentCount()),
       failureCountFor: (id) => failureCounts.get(id) ?? 0,
       resetFailureCount: (id) => { failureCounts.set(id, 0); },
       worktreeOccupiedBy,
@@ -2588,71 +2867,22 @@ async function poll(): Promise<void> {
 
 // ── Shutdown ──────────────────────────────────────────────────────────────────
 
-process.on('SIGINT', async () => {
+process.on('SIGINT', () => {
   isShuttingDown = true;
   const total = runningAgents.size;
-  log('\n' + chalk.yellow(`[symphony] Shutting down — interrupting ${total} running agent(s)...`));
-
-  if (REMOTE_CONTROL) {
-    await Promise.all([...runningAgents.entries()].map(async ([identifier, agent]) => {
-      const sessionFile = path.join(agent.worktreePath, '.claude-session-id');
-      if (!fs.existsSync(sessionFile)) return;
-      const sessionId = fs.readFileSync(sessionFile, 'utf8').trim();
-      if (!sessionId) return;
-      try {
-        await new Promise<void>((resolve) => {
-          const stop = child_process.spawn('claude', ['--dangerously-skip-permissions', '--resume', sessionId, '--print', 'STOP. The Symphony poller has shut down. Save your work to the workpad and exit immediately.'], { stdio: 'ignore' });
-          stop.on('exit', () => resolve());
-          setTimeout(() => { stop.kill(); resolve(); }, 10_000);
-        });
-      } catch { /* best-effort */ }
-    }));
-  }
-
-  const pidKills: Promise<void>[] = [];
-  for (const { proc } of runningAgents.values()) {
-    if (proc.pid === undefined) continue;
-    // run-ticket.sh re-execs through setsid, so proc.pid is the PGID leader.
-    // Signalling the negative PID hits every descendant — claude, MCP servers,
-    // nested shells — instead of just the bash, which used to die fast and
-    // leave its children for launchd to adopt.
-    try { process.kill(-proc.pid, 'SIGTERM'); }
-    catch { try { proc.kill('SIGTERM'); } catch { /* already gone */ } }
-    pidKills.push(new Promise<void>((resolve) => proc.on('exit', () => resolve())));
-  }
-
-  const logsDir = path.join(SYMPHONY_ROOT, 'logs');
-  const trackedPids = new Set([...runningAgents.values()].map(({ proc }) => proc.pid).filter(Boolean));
-  if (fs.existsSync(logsDir)) {
-    for (const file of fs.readdirSync(logsDir)) {
-      if (!file.startsWith('agent-pid-') || !file.endsWith('.pid')) continue;
-      const filePath = path.join(logsDir, file);
-      const pid = parseInt(fs.readFileSync(filePath, 'utf8').trim(), 10);
-      if (!isNaN(pid) && !trackedPids.has(pid) && isPidAlive(pid)) {
-        try { process.kill(-pid, 'SIGTERM'); } catch {
-          try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
-        }
-      }
-      fs.rmSync(filePath, { force: true });
-    }
-  }
-
-  // Best-effort sweep of nx daemons spawned by any agent — they detach into
-  // their own session, so the PGID kill above does not reach them.
-  killOrphanedNxDaemons();
-
-  // Wait up to 5s for children to exit cleanly, then escalate to SIGKILL on
-  // the same PGIDs. 100ms (the previous value) was nowhere near enough for
-  // claude to flush MCP state, leaving zombies on every SIGINT.
-  await Promise.race([
-    Promise.all(pidKills),
-    sleep(5000),
-  ]);
-  for (const { proc } of runningAgents.values()) {
-    if (proc.pid === undefined) continue;
-    try { process.kill(-proc.pid, 'SIGKILL'); } catch { /* already gone */ }
-  }
-
+  // Non-destructive shutdown (SY-66): the poller detaches from the agents it
+  // spawned and exits. `run-ticket.sh` re-execs through `setsid` so its bash /
+  // pty-wrapper.py / claude tree sits in its own session+PGID and survives
+  // the poller exiting without inheriting SIGHUP. The previous shutdown
+  // broadcast a `STOP. Save your work and exit immediately.` prompt via
+  // `claude --resume --print` and then SIGTERM/SIGKILL'd the PGID — which
+  // killed working sessions mid-conversation and made Claude Desktop lose
+  // the remote-control entry. We now leave running agents alone; the next
+  // poller startup adopts them via their `agent-pid-*.pid` handles in
+  // cleanupOrphanedAgentsByPidFiles(). `agent-pid-*.pid` files are NOT
+  // removed here — they are the only handle the next poller has to recognize
+  // survivors.
+  log('\n' + chalk.yellow(`[symphony] Shutting down — leaving ${total} running agent(s) attached to their existing claude sessions.`));
   console.log(chalk.yellow('[symphony] Stopped.'));
   process.exit(0);
 });
@@ -2717,7 +2947,11 @@ while (true) {
         { cwd: worktreePath, stdio: ['ignore', logFd, logFd], detached: false }
       );
 
-      if (child.pid !== undefined) fs.writeFileSync(activePidFile, String(child.pid));
+      // SY-66: pid file content is `<pid>\n<worktree>` so the next poller can
+  // pick up the exact worktree this agent was spawned into when adopting,
+  // even if findWorktreePathForIdentifier would return a stale leftover dir.
+  // Readers handle a single-line legacy file too.
+  if (child.pid !== undefined) fs.writeFileSync(activePidFile, `${child.pid}\n${worktreePath}\n`);
 
       runningAgents.set(pausedTicket.identifier, {
         proc: child,

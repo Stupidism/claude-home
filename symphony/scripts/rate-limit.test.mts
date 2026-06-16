@@ -12,7 +12,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { RATE_LIMIT_PATTERN, parseRateLimitResetTime } from './rate-limit.mts';
+import { RATE_LIMIT_PATTERN, parseRateLimitResetTime, scanTailForRateLimit } from './rate-limit.mts';
 
 // ── RATE_LIMIT_PATTERN ───────────────────────────────────────────────────────
 
@@ -52,4 +52,48 @@ test('parseRateLimitResetTime returns a future date for a valid banner', () => {
   const reset = parseRateLimitResetTime("You've hit your limit · resets 6pm (UTC)");
   assert.ok(reset instanceof Date);
   assert.ok(reset!.getTime() > Date.now());
+});
+
+// ── scanTailForRateLimit (SY-66 adopted-agent completion handling) ───────────
+
+test('scanTailForRateLimit detects a banner written after the adoption offset', () => {
+  const pre = 'starting session\nnormal work line\n';
+  const log = pre + "You've hit your limit · resets 6pm (UTC)\n";
+  const res = scanTailForRateLimit(log, pre.length);
+  assert.equal(res.hit, true);
+  assert.ok(res.resetAt instanceof Date);
+  assert.ok(res.resetAt!.getTime() > Date.now());
+});
+
+test('scanTailForRateLimit ignores a stale banner that precedes the offset', () => {
+  // A banner left by a PREVIOUS run-ticket.sh invocation, before we adopted the
+  // agent — must NOT trigger a pause (the whole reason we record an offset).
+  const stale = "You've hit your limit · resets 6pm (UTC)\n";
+  const log = stale + 'new session after adoption\nharmless rate-limit mention\n';
+  const res = scanTailForRateLimit(log, stale.length);
+  assert.equal(res.hit, false);
+  assert.equal(res.resetAt, null);
+});
+
+test('scanTailForRateLimit with offset 0 scans the whole log', () => {
+  assert.equal(scanTailForRateLimit("You've hit your limit · resets 6pm (UTC)").hit, true);
+  assert.equal(scanTailForRateLimit('just an innocent rate-limit log line').hit, false);
+});
+
+test('scanTailForRateLimit does NOT fall back to whole-log scan when offset exceeds length', () => {
+  // Log was truncated/rotated since adoption (now shorter than the recorded
+  // offset). There are no new bytes, so a banner that survives from before the
+  // offset must NOT be matched (CodeRabbit on PR #74).
+  const log = "You've hit your limit · resets 6pm (UTC)\n";
+  const res = scanTailForRateLimit(log, log.length + 100);
+  assert.equal(res.hit, false);
+  assert.equal(res.resetAt, null);
+});
+
+test('scanTailForRateLimit returns hit but null reset for an unparseable banner', () => {
+  // Banner present but no parseable reset clause — caller treats null reset as
+  // "do not pause" so a single malformed line never wedges the poller.
+  const res = scanTailForRateLimit("You've hit your limit and resets sometime");
+  assert.equal(res.hit, true);
+  assert.equal(res.resetAt, null);
 });
