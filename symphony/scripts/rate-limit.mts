@@ -25,10 +25,12 @@ export function scanTailForRateLimit(
   logContent: string,
   fromOffset = 0
 ): { hit: boolean; resetAt: Date | null } {
-  const tail =
-    fromOffset > 0 && fromOffset <= logContent.length
-      ? logContent.slice(fromOffset)
-      : logContent;
+  // fromOffset > 0  → scan only what was appended since adoption. If the log was
+  //   truncated/rotated so it's now shorter than the offset, slice() returns ''
+  //   (no new bytes) — we must NOT fall back to scanning the whole log, or a
+  //   stale banner from before the offset could trigger a false pause.
+  // fromOffset <= 0 → scan the whole log (the offset-0 default).
+  const tail = fromOffset > 0 ? logContent.slice(fromOffset) : logContent;
   if (!RATE_LIMIT_PATTERN.test(tail)) return { hit: false, resetAt: null };
   return { hit: true, resetAt: parseRateLimitResetTime(tail) };
 }

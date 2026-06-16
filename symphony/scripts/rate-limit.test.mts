@@ -80,6 +80,16 @@ test('scanTailForRateLimit with offset 0 scans the whole log', () => {
   assert.equal(scanTailForRateLimit('just an innocent rate-limit log line').hit, false);
 });
 
+test('scanTailForRateLimit does NOT fall back to whole-log scan when offset exceeds length', () => {
+  // Log was truncated/rotated since adoption (now shorter than the recorded
+  // offset). There are no new bytes, so a banner that survives from before the
+  // offset must NOT be matched (CodeRabbit on PR #74).
+  const log = "You've hit your limit · resets 6pm (UTC)\n";
+  const res = scanTailForRateLimit(log, log.length + 100);
+  assert.equal(res.hit, false);
+  assert.equal(res.resetAt, null);
+});
+
 test('scanTailForRateLimit returns hit but null reset for an unparseable banner', () => {
   // Banner present but no parseable reset clause — caller treats null reset as
   // "do not pause" so a single malformed line never wedges the poller.
