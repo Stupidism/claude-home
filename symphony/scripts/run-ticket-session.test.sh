@@ -103,7 +103,7 @@ mkdir -p "${SESSION_ENV_DIR}/${SID}"
 assert_eq "remote-control resumes via session-env" 0 "$(decide '' "$WT" "$HOME_DIR" claude true)"
 
 echo "case 6: remote-control pointer + session-env dir missing → new session"
-rm -rf "${SESSION_ENV_DIR}/${SID}"
+rm -rf "${SESSION_ENV_DIR:?}/${SID:?}"
 assert_eq "remote-control new session when session-env gone" 1 "$(decide '' "$WT" "$HOME_DIR" claude true)"
 
 # UP-839: codex has no resume plumbing — context never survives a restart.
