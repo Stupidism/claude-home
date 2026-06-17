@@ -201,6 +201,17 @@ if [ -f "$SYMPHONY_ROOT/secrets.env" ] && [ ! -f "$WORKTREE_PATH/secrets.env" ];
   echo "[run] Copied secrets.env to worktree."
 fi
 
+# Copy the main repo's .npmrc into the worktree. It carries private-registry
+# auth (e.g. the npm.pkg.github.com token for @helloworld1812 packages) and is
+# typically gitignored — so it is NOT present in a fresh worktree (git only
+# checks out tracked files). Without it `npm install` 401s on private @scope
+# packages and the agent never gets a working environment (UP-840). It stays
+# gitignored inside the worktree too, so the agent's `git add` can't commit it.
+if [ -f "$REPO_ROOT/.npmrc" ] && [ ! -f "$WORKTREE_PATH/.npmrc" ]; then
+  cp "$REPO_ROOT/.npmrc" "$WORKTREE_PATH/.npmrc"
+  echo "[run] Copied .npmrc to worktree."
+fi
+
 # Setup: symlink node_modules if needed
 if [ "${SETUP_SYMLINK_NODE_MODULES:-}" = "true" ] && [ ! -e "$WORKTREE_PATH/node_modules" ]; then
   ln -s "$REPO_ROOT/node_modules" "$WORKTREE_PATH/node_modules"
