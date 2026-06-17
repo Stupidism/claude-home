@@ -290,6 +290,21 @@ for (const board of boards) {
     assert.deepEqual(fnNames(calls), ['removeWorktree', 'moveToDone']);
   });
 
+  test(`[${board.name}] humanReview merged fast-path: removeWorktree throwing still moves to Done (UP-819)`, async () => {
+    const ticket = stubTicket(board.ticketPrefix, 119, 'humanReview', board);
+    let removeAttempted = false;
+    const { deps, calls } = makeDeps({
+      areAllPRsMerged: () => true,
+      removeWorktree: () => { removeAttempted = true; throw new Error('worktree busy'); },
+    });
+    const effect = await processTicket('humanReview', ticket, board, deps);
+    assert.deepEqual(effect, { kind: 'finalizeMergedDuringReview' });
+    assert.equal(removeAttempted, true, 'removeWorktree must be attempted');
+    // removeWorktree threw, but moveToDone must still fire so the ticket leaves
+    // Human Review instead of getting stranded there.
+    assert.deepEqual(fnNames(calls), ['moveToDone']);
+  });
+
   test(`[${board.name}] humanReview when Symphony-locked PR URL is merged on an unrelated branch → finalizes via isPRUrlMerged fallback`, async () => {
     const ticket = stubTicket(board.ticketPrefix, 116, 'humanReview', board);
     const { deps, calls } = makeDeps({

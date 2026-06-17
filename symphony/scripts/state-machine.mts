@@ -455,7 +455,8 @@ async function handleHumanReview<B extends BoardRef>({ ticket, board, deps }: Di
 
   // Fast path: PR was merged directly on GitHub, skipping Merging.
   let merged = false;
-  try { merged = deps.areAllPRsMerged(ticket, board); } catch { /* best-effort */ }
+  try { merged = deps.areAllPRsMerged(ticket, board); }
+  catch (err) { deps.log(`areAllPRsMerged failed for ${ticket.identifier}: ${err}`); }
 
   // Comment-derived state is best-effort: if the comment API trips, fall back
   // to safe defaults rather than throwing past the fast-path finalize block.
@@ -489,11 +490,20 @@ async function handleHumanReview<B extends BoardRef>({ ticket, board, deps }: Di
 
   if (merged) {
     deps.log(`PR merged in Human Review for ${ticket.identifier} — finalizing`);
+    // Separate try/catch per step: a worktree-removal failure (e.g. dirty
+    // worktree, lock held) must NOT skip moveToDone — getting the ticket to
+    // Done is the priority, and a leftover worktree is recoverable by
+    // cleanup-tickets, whereas a ticket stranded in Human Review is the very
+    // bug this fast-path exists to prevent (UP-819).
     try {
       deps.removeWorktree(ticket, board);
+    } catch (err) {
+      deps.log(`removeWorktree failed for ${ticket.identifier} during merged finalize: ${err}`);
+    }
+    try {
       await deps.moveToDone(board, ticket.id, ticket.identifier);
     } catch (err) {
-      deps.log(`Failed to finalize merged PR ${ticket.identifier}: ${err}`);
+      deps.log(`moveToDone failed for ${ticket.identifier} during merged finalize: ${err}`);
     }
     return { kind: 'finalizeMergedDuringReview' };
   }
