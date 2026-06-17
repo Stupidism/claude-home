@@ -292,12 +292,14 @@ for (const board of boards) {
 
   test(`[${board.name}] humanReview merged fast-path: removeWorktree throwing still moves to Done (UP-819)`, async () => {
     const ticket = stubTicket(board.ticketPrefix, 119, 'humanReview', board);
+    let removeAttempted = false;
     const { deps, calls } = makeDeps({
       areAllPRsMerged: () => true,
-      removeWorktree: () => { throw new Error('worktree busy'); },
+      removeWorktree: () => { removeAttempted = true; throw new Error('worktree busy'); },
     });
     const effect = await processTicket('humanReview', ticket, board, deps);
     assert.deepEqual(effect, { kind: 'finalizeMergedDuringReview' });
+    assert.equal(removeAttempted, true, 'removeWorktree must be attempted');
     // removeWorktree threw, but moveToDone must still fire so the ticket leaves
     // Human Review instead of getting stranded there.
     assert.deepEqual(fnNames(calls), ['moveToDone']);
