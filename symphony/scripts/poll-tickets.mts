@@ -888,9 +888,12 @@ function areAllPRsMerged(issue: Issue, board: BoardConfig): boolean {
     'gh', ['pr', 'list', '--repo', repo.githubRepo, '--head', branch, '--state', 'open', '--json', 'number', '--limit', '1'], ghOpts
   );
   if (openResult.status !== 0) {
+    // Can't prove "no open PR" — refuse to finalize rather than risk moving a
+    // ticket to Done while an open PR still exists. The next poll cycle retries.
     log(chalk.yellow(`[symphony] areAllPRsMerged: gh open-PR query failed for ${issue.identifier} (${repo.githubRepo}): ${openResult.stderr?.trim() || openResult.error?.message || 'unknown error'}`));
+    return false;
   }
-  try { if (openResult.status === 0 && (JSON.parse(openResult.stdout) as unknown[]).length > 0) return false; } catch { /* ignore */ }
+  try { if ((JSON.parse(openResult.stdout) as unknown[]).length > 0) return false; } catch { /* ignore */ }
   // Check for at least one merged PR
   const mergedResult = child_process.spawnSync(
     'gh', ['pr', 'list', '--repo', repo.githubRepo, '--head', branch, '--state', 'merged', '--json', 'number', '--limit', '1'], ghOpts
