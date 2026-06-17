@@ -871,19 +871,34 @@ function worktreeOccupiedBy(issue: Issue, board: BoardConfig): string | null {
  */
 function areAllPRsMerged(issue: Issue, board: BoardConfig): boolean {
   const repo = resolveRepo(issue, board);
-  const repoPath = repo.path.replace(/^~/, process.env['HOME'] ?? '~');
   const branch = branchForIssue(issue);
-  const ghOpts = { encoding: 'utf8' as const, cwd: repoPath };
+  // Query by --repo rather than relying on cwd: under the poller daemon the
+  // process cwd / git remote / tty differs from an interactive shell, so a
+  // cwd-scoped `gh pr list` could silently return no PRs and strand an
+  // already-merged ticket in Human Review (UP-819). Pass the same
+  // prompt-disabling env + timeout as resolveRepoByPR / isPRUrlMerged so a
+  // missing tty can't make gh hang.
+  const ghOpts = {
+    encoding: 'utf8' as const,
+    timeout: 15_000,
+    env: { ...process.env, GH_PROMPT_DISABLED: '1', GIT_TERMINAL_PROMPT: '0' },
+  };
   // If an open PR still exists, the ticket is not ready to finalize
   const openResult = child_process.spawnSync(
-    'gh', ['pr', 'list', '--head', branch, '--state', 'open', '--json', 'number', '--limit', '1'], ghOpts
+    'gh', ['pr', 'list', '--repo', repo.githubRepo, '--head', branch, '--state', 'open', '--json', 'number', '--limit', '1'], ghOpts
   );
+  if (openResult.status !== 0) {
+    log(chalk.yellow(`[symphony] areAllPRsMerged: gh open-PR query failed for ${issue.identifier} (${repo.githubRepo}): ${openResult.stderr?.trim() || openResult.error?.message || 'unknown error'}`));
+  }
   try { if (openResult.status === 0 && (JSON.parse(openResult.stdout) as unknown[]).length > 0) return false; } catch { /* ignore */ }
   // Check for at least one merged PR
   const mergedResult = child_process.spawnSync(
-    'gh', ['pr', 'list', '--head', branch, '--state', 'merged', '--json', 'number', '--limit', '1'], ghOpts
+    'gh', ['pr', 'list', '--repo', repo.githubRepo, '--head', branch, '--state', 'merged', '--json', 'number', '--limit', '1'], ghOpts
   );
-  if (mergedResult.status !== 0) return false;
+  if (mergedResult.status !== 0) {
+    log(chalk.yellow(`[symphony] areAllPRsMerged: gh merged-PR query failed for ${issue.identifier} (${repo.githubRepo}): ${mergedResult.stderr?.trim() || mergedResult.error?.message || 'unknown error'}`));
+    return false;
+  }
   try { return (JSON.parse(mergedResult.stdout) as unknown[]).length > 0; } catch { return false; }
 }
 
