@@ -71,6 +71,16 @@ assert_eq() {
   fi
 }
 
+# Mirror run-ticket.sh's .npmrc copy (UP-840). Kept in sync by hand — if the
+# production block changes shape, update this and the assertions below.
+#   $1 repo_root   $2 worktree_path
+copy_npmrc() {
+  local repo_root="$1" worktree_path="$2"
+  if [ -f "$repo_root/.npmrc" ] && [ ! -f "$worktree_path/.npmrc" ]; then
+    cp "$repo_root/.npmrc" "$worktree_path/.npmrc"
+  fi
+}
+
 WT="$TMP/worktree"
 HOME_DIR="$TMP/home"
 PROJECT_DIR="${HOME_DIR}/.claude/projects/$(echo "$WT" | tr '/' '-')"
@@ -111,6 +121,27 @@ echo "case 7: codex pointer present → still new session"
 mkdir -p "${SESSION_ENV_DIR}/${SID}"
 : > "${PROJECT_DIR}/${SID}.jsonl"
 assert_eq "codex never resumes" 1 "$(decide '' "$WT" "$HOME_DIR" codex)"
+
+# UP-840: the gitignored .npmrc (private-registry auth) must be copied from the
+# main repo into the worktree, or npm install 401s on private @scope packages.
+REPO="$TMP/repo"
+NPMWT="$TMP/npmrc-worktree"
+mkdir -p "$REPO" "$NPMWT"
+
+echo "case 8: repo .npmrc present, worktree has none → copied"
+printf '//npm.pkg.github.com/:_authToken=tok\n' > "$REPO/.npmrc"
+copy_npmrc "$REPO" "$NPMWT"
+assert_eq ".npmrc copied into worktree" "//npm.pkg.github.com/:_authToken=tok" "$(cat "$NPMWT/.npmrc" 2>/dev/null)"
+
+echo "case 9: worktree already has .npmrc → not overwritten"
+printf 'existing\n' > "$NPMWT/.npmrc"
+copy_npmrc "$REPO" "$NPMWT"
+assert_eq "existing .npmrc preserved" "existing" "$(cat "$NPMWT/.npmrc" 2>/dev/null)"
+
+echo "case 10: repo has no .npmrc → nothing copied, no error"
+rm -f "$REPO/.npmrc" "$NPMWT/.npmrc"
+copy_npmrc "$REPO" "$NPMWT"
+assert_eq "no .npmrc when source absent" "absent" "$( [ -f "$NPMWT/.npmrc" ] && echo present || echo absent )"
 
 if [ "$FAIL" -eq 0 ]; then
   echo "All cases passed."
