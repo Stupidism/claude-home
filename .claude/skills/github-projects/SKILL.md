@@ -5,7 +5,7 @@ description: GitHub Projects (ProjectV2) ticket operations — workpad CRUD, sta
 
 # GitHub Projects Operations
 
-**Prefer `mcp__github__*` MCP tools for everything that has one.** They handle auth and pagination automatically. Two operations don't have MCP equivalents (ProjectV2 state mutations, comment update/delete) — fall back to the GitHub GraphQL or REST API for those.
+**Use `mcp__github__*` MCP tools for reads; use curl (REST / GraphQL) with `$GITHUB_TOKEN` for every write.** The GitHub MCP server authenticates with its own bundled token that lacks `Issues:write` on the project repo, so MCP write calls (`add_issue_comment`, `issue_write`, `sub_issue_write`) return `403 Resource not accessible by personal access token`. Reads (`issue_read`) work fine over MCP. All write paths in this skill therefore go through the GitHub REST/GraphQL API with `$GITHUB_TOKEN` from `secrets.env`, which carries the required scopes (Issues:write, Projects:read, Projects:write, Metadata:read). ProjectV2 state mutations have no MCP equivalent and have always used GraphQL.
 
 GitHub Projects = ProjectV2. State lives in a single-select field (default `Status`) on a Project that the Issue is added to; comments and labels live on the backing Issue inside its repo.
 
@@ -37,22 +37,24 @@ The Symphony adapter packs `<projectItemId>|<owner/repo>|<issueNumber>` as the o
 
 ---
 
-## Common operations (MCP)
+## Common operations
 
-| Intent | MCP tool | Notes |
+Reads go through MCP; writes go through curl (the MCP server's token lacks `Issues:write` — see the intro). The curl commands for every write live under **REST fallback** and **State transitions** below.
+
+| Intent | How | Notes |
 |---|---|---|
-| Get ticket details | `mcp__github__issue_read` `method=get` | Pass `owner`, `repo`, `issue_number`. Comments come back via a separate `get_comments` call. |
-| List comments | `mcp__github__issue_read` `method=get_comments` | Paginate via `page` / `perPage`. |
-| Create a comment (workpad) | `mcp__github__add_issue_comment` | Pass `body` as raw Markdown — GitHub renders it directly. |
-| Update a comment (workpad) | **No MCP tool** | Use REST fallback (`PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}`). |
-| Delete a comment | **No MCP tool** | Use REST fallback (`DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}`). |
-| List labels on a ticket | `mcp__github__issue_read` `method=get_labels` | — |
-| Add / remove labels | `mcp__github__issue_write` `method=update` with `labels` (full replace) | — |
-| Create a new ticket | `mcp__github__issue_write` `method=create` | For Symphony ticket creation follow `$SKILLS_ROOT/new-ticket/SKILL.md`, which creates the issue, adds it to the project, then sets the Status field to Backlog. |
-| Add a sub-issue (parent link) | `mcp__github__sub_issue_write` `method=add` | — |
-| Change ticket state | **No MCP tool** | ProjectV2 single-select mutations require GraphQL (see below). |
+| Get ticket details | `mcp__github__issue_read` `method=get` (MCP) | Pass `owner`, `repo`, `issue_number`. Comments come back via a separate `get_comments` call. |
+| List comments | `mcp__github__issue_read` `method=get_comments` (MCP) | Paginate via `page` / `perPage`. |
+| List labels on a ticket | `mcp__github__issue_read` `method=get_labels` (MCP) | — |
+| Create a comment (workpad) | **curl** | `POST /repos/{owner}/{repo}/issues/{issue_number}/comments` — body is raw Markdown. See REST fallback. |
+| Update a comment (workpad) | **curl** | `PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}`. See REST fallback. |
+| Delete a comment | **curl** | `DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}`. See REST fallback. |
+| Add / remove labels | **curl** | Targeted `POST` / `DELETE .../labels` endpoints — see REST fallback. |
+| Create a new ticket | **curl** | For Symphony ticket creation follow `$SKILLS_ROOT/new-ticket/SKILL.md`, which creates the issue, adds it to the project, then sets the Status field to Backlog. |
+| Add a sub-issue (parent link) | **curl** | `POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues` with `{sub_issue_id}`. See REST fallback. |
+| Change ticket state | **curl (GraphQL)** | ProjectV2 single-select mutations require GraphQL (see below). |
 
-`mcp__github__issue_write method=update` with `labels` replaces the full label set, so when you want to add or remove one specific label, read the current labels via `issue_read method=get_labels` first and pass the merged array. The poller's adapter uses targeted REST endpoints to avoid the round-trip; skills don't need to.
+The targeted `POST` / `DELETE .../labels` endpoints (see REST fallback) add or remove a single label without a read-merge round-trip, so there is no need to fetch the current label set first. The poller's adapter at `symphony/scripts/ticket-systems/github-projects.mts` uses the same endpoints and is the canonical reference.
 
 ---
 
@@ -104,7 +106,9 @@ Transport notes specific to GitHub Issues:
 
 ---
 
-## REST fallback (only when MCP tools are unavailable)
+## REST / curl (the required path for all writes)
+
+These are not just a fallback — every write goes here, because the MCP server's bundled token lacks `Issues:write` (see the intro). The `Get issue + comments` reads below are an alternative to the MCP `issue_read` calls for when MCP is unavailable.
 
 Auth header:
 
@@ -156,6 +160,16 @@ curl -s -X DELETE -H "$GH_AUTH" -H "$GH_ACCEPT" -H "$GH_VERSION" \
 ```
 
 If the label doesn't exist on the repo yet, the `POST .../labels` call returns 422. Create it first via `POST /repos/$OWNER/$NAME/labels {"name": "<label>"}` — the adapter at `symphony/scripts/ticket-systems/github-projects.mts` does this with `ensureRepoLabel()` and is the canonical reference.
+
+### Add a sub-issue (parent link)
+
+`$sub_issue_id` is the **issue id** (not the issue number) of the child, available from `GET /repos/$OWNER/$NAME/issues/$CHILD_NUMBER` as `.id`.
+
+```bash
+curl -s -X POST -H "$GH_AUTH" -H "$GH_ACCEPT" -H "$GH_VERSION" \
+  -d "$(jq -n --argjson id "$SUB_ISSUE_ID" '{sub_issue_id:$id}')" \
+  "https://api.github.com/repos/$OWNER/$NAME/issues/$ISSUE_NUMBER/sub_issues"
+```
 
 ### Transition state (GraphQL)
 
