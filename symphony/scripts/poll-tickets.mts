@@ -1864,15 +1864,20 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
         log(chalk.red(`[${timestamp()}] ✗ Agent failed:`) + ` ${chalk.bold(ticket.identifier)} (exit ${code ?? signal}, attempt ${failures}/${MAX_RETRIES})`);
       }
     } else if (isExternalKillExit(code, signal) && !agent?.spawnedForMerging) {
-      // UP-845: an In Progress agent was killed by an external signal
-      // (`kill -9`, or any signal not routed through the poller's own
-      // `kill <id>` command — that path sets `userKilled` and returns above).
-      // `{ code: null, signal != null }` is NOT a clean completion, so treat
-      // it like the isShuttingDown interrupt: log only, leave the ticket In
-      // Progress, and don't touch the retry counter. The next poll cycle
-      // resumes it. Previously this fell into the "done" branch below and
-      // force-moved the ticket to Human Review. Merging agents are excluded
-      // here so their SIGKILL still flows to the UP-827 finalize below.
+      // UP-845: an In Progress agent was killed by an uncatchable signal
+      // (`kill -9` / SIGKILL — not the poller's own `kill <id>` command, which
+      // sets `userKilled` and returns above). `{ code: null, signal != null }`
+      // is NOT a clean completion, so treat it like the isShuttingDown
+      // interrupt: log only, leave the ticket In Progress, and don't touch the
+      // retry counter. The next poll cycle resumes it. Previously this fell
+      // into the "done" branch below and force-moved the ticket to Human
+      // Review. Merging agents are excluded here so their SIGKILL still flows
+      // to the UP-827 finalize below.
+      //
+      // Note (Codex review on PR #89): trapped signals do NOT reach here.
+      // run-ticket.sh traps INT/TERM/HUP and re-exits 130/143/129, so a plain
+      // `kill <pid>` (SIGTERM) arrives as `{ code: 143, signal: null }` and is
+      // handled by the failure branch above — left unchanged by design.
       log(chalk.yellow(`[${timestamp()}] ⚠ Agent interrupted:`) + ` ${chalk.bold(ticket.identifier)} (signal ${signal})`);
     } else {
       failureCounts.delete(ticket.identifier);

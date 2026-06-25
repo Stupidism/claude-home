@@ -940,17 +940,33 @@ test('shouldFinalizeMergedAgent: isMerged throwing is treated as not merged (bes
 
 // ── isExternalKillExit (UP-845) ───────────────────────────────────────────────
 // Guards the close-handler decision for an In Progress agent killed by an
-// external signal. The "done" branch is the else of the narrow failure check
-// (`code !== 0 && signal == null`), so a signal-killed exit used to fall through
-// to "done" and force-move the ticket to Human Review. This predicate routes it
-// to the interrupt path instead, leaving the ticket In Progress.
+// uncatchable signal. The "done" branch is the else of the narrow failure check
+// (`code !== 0 && signal == null`), so a SIGKILL'd exit used to fall through to
+// "done" and force-move the ticket to Human Review. This predicate routes it to
+// the interrupt path instead, leaving the ticket In Progress.
+//
+// Scope (Codex review on PR #89): the poller's child is run-ticket.sh, which
+// traps INT/TERM/HUP and re-exits 130/143/129. So a plain `kill <pid>`
+// (SIGTERM) arrives as `{ code: 143, signal: null }` — handled by the failure
+// branch, NOT this predicate. Only truly uncatchable signals (SIGKILL) produce
+// `code === null` and are classified as an external kill here.
 
 test('isExternalKillExit: SIGKILL (code null, signal set) is an external kill', () => {
   assert.equal(isExternalKillExit(null, 'SIGKILL'), true);
 });
 
-test('isExternalKillExit: SIGTERM (code null, signal set) is an external kill', () => {
+test('isExternalKillExit: any uncatchable signal exit (code null) is an external kill', () => {
+  // Generic property: a code===null exit (signal not trapped by the process)
+  // is an external kill regardless of which signal Node reports.
   assert.equal(isExternalKillExit(null, 'SIGTERM'), true);
+});
+
+test('isExternalKillExit: trapped SIGTERM (code 143, no signal) is NOT an external kill — run-ticket.sh re-exits 143, routed to the failure branch', () => {
+  assert.equal(isExternalKillExit(143, null), false);
+});
+
+test('isExternalKillExit: trapped SIGINT (code 130, no signal) is NOT an external kill', () => {
+  assert.equal(isExternalKillExit(130, null), false);
 });
 
 test('isExternalKillExit: clean exit (code 0, no signal) is NOT an external kill', () => {

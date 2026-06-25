@@ -256,19 +256,27 @@ export function shouldFinalizeMergedAgent(
 }
 
 /**
- * Whether an agent process exit was an external-kill interrupt rather than a
+ * Whether an agent process exit was an uncatchable-signal kill rather than a
  * self-determined exit (UP-845).
  *
  * Node reports a signal-terminated process as `{ code: null, signal: <sig> }`
- * and a self-exited one as `{ code: <number>, signal: null }`. An external
- * `kill -9` (or any signal not routed through the poller's own `kill <id>`
- * command, which sets `userKilled`) is NOT a completion: the close-handler's
- * "done" branch is the `else` of the narrow failure check `code !== 0 &&
- * signal == null`, so a signal-killed In Progress agent used to fall through
- * to "done" and get force-moved to Human Review. This predicate lets the
- * handler treat such an exit like the `isShuttingDown` interrupt — leave the
- * ticket In Progress so the next poll cycle resumes it. The symmetric Merging
- * case is handled separately by `shouldFinalizeMergedAgent` (UP-827).
+ * and a self-exited one as `{ code: <number>, signal: null }`. A kill the
+ * process could not trap — `kill -9` / SIGKILL — surfaces as `code === null`.
+ * That is NOT a completion: the close-handler's "done" branch is the `else` of
+ * the narrow failure check `code !== 0 && signal == null`, so a SIGKILL'd In
+ * Progress agent used to fall through to "done" and get force-moved to Human
+ * Review. This predicate lets the handler treat such an exit like the
+ * `isShuttingDown` interrupt — leave the ticket In Progress so the next poll
+ * cycle resumes it. The symmetric Merging case is handled separately by
+ * `shouldFinalizeMergedAgent` (UP-827).
+ *
+ * Scope note (Codex review on PR #89): the poller's spawned child is
+ * `run-ticket.sh`, which TRAPS SIGINT/SIGTERM/SIGHUP and re-exits with
+ * 130/143/129 (see its `cleanup_process_group` traps). So a plain `kill <pid>`
+ * (SIGTERM) reaches the poller as `{ code: 143, signal: null }`, not as a
+ * signal — it stays in the existing failure branch (rate-limit scan + retry)
+ * by design, which the ticket explicitly leaves untouched. Only a truly
+ * uncatchable signal (SIGKILL) produces `code === null` and reaches here.
  */
 export function isExternalKillExit(
   code: number | null,
