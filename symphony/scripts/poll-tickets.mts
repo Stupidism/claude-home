@@ -53,6 +53,7 @@ import {
   NEEDS_NOTIFY_LABEL,
   REVIEW_NOTIFIED_LABEL,
   shouldFinalizeMergedAgent,
+  isExternalKillExit,
   MAX_RETRIES as STATE_MACHINE_MAX_RETRIES,
   type Deps as StateMachineDeps,
   type SpawnMode,
@@ -1862,6 +1863,17 @@ function spawnAgent(ticket: Issue, board: BoardConfig, mode: SpawnMode = 'contin
         failureCounts.set(ticket.identifier, failures);
         log(chalk.red(`[${timestamp()}] ✗ Agent failed:`) + ` ${chalk.bold(ticket.identifier)} (exit ${code ?? signal}, attempt ${failures}/${MAX_RETRIES})`);
       }
+    } else if (isExternalKillExit(code, signal) && !agent?.spawnedForMerging) {
+      // UP-845: an In Progress agent was killed by an external signal
+      // (`kill -9`, or any signal not routed through the poller's own
+      // `kill <id>` command — that path sets `userKilled` and returns above).
+      // `{ code: null, signal != null }` is NOT a clean completion, so treat
+      // it like the isShuttingDown interrupt: log only, leave the ticket In
+      // Progress, and don't touch the retry counter. The next poll cycle
+      // resumes it. Previously this fell into the "done" branch below and
+      // force-moved the ticket to Human Review. Merging agents are excluded
+      // here so their SIGKILL still flows to the UP-827 finalize below.
+      log(chalk.yellow(`[${timestamp()}] ⚠ Agent interrupted:`) + ` ${chalk.bold(ticket.identifier)} (signal ${signal})`);
     } else {
       failureCounts.delete(ticket.identifier);
       log(chalk.green(`[${timestamp()}] ✓ Agent done:`) + ` ${chalk.bold(ticket.identifier)}`);

@@ -17,6 +17,7 @@ import {
   processTicket,
   ticketMachine,
   shouldFinalizeMergedAgent,
+  isExternalKillExit,
   type BoardRef,
   type Deps,
   type Effect,
@@ -935,4 +936,27 @@ test('shouldFinalizeMergedAgent: failure exit (code 1) + PR merged → finalize 
 test('shouldFinalizeMergedAgent: isMerged throwing is treated as not merged (best-effort)', () => {
   const result = shouldFinalizeMergedAgent(null, () => { throw new Error('gh failed'); });
   assert.equal(result, false);
+});
+
+// ── isExternalKillExit (UP-845) ───────────────────────────────────────────────
+// Guards the close-handler decision for an In Progress agent killed by an
+// external signal. The "done" branch is the else of the narrow failure check
+// (`code !== 0 && signal == null`), so a signal-killed exit used to fall through
+// to "done" and force-move the ticket to Human Review. This predicate routes it
+// to the interrupt path instead, leaving the ticket In Progress.
+
+test('isExternalKillExit: SIGKILL (code null, signal set) is an external kill', () => {
+  assert.equal(isExternalKillExit(null, 'SIGKILL'), true);
+});
+
+test('isExternalKillExit: SIGTERM (code null, signal set) is an external kill', () => {
+  assert.equal(isExternalKillExit(null, 'SIGTERM'), true);
+});
+
+test('isExternalKillExit: clean exit (code 0, no signal) is NOT an external kill', () => {
+  assert.equal(isExternalKillExit(0, null), false);
+});
+
+test('isExternalKillExit: non-zero failure exit (code 1, no signal) is NOT an external kill', () => {
+  assert.equal(isExternalKillExit(1, null), false);
 });

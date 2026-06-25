@@ -255,6 +255,28 @@ export function shouldFinalizeMergedAgent(
   }
 }
 
+/**
+ * Whether an agent process exit was an external-kill interrupt rather than a
+ * self-determined exit (UP-845).
+ *
+ * Node reports a signal-terminated process as `{ code: null, signal: <sig> }`
+ * and a self-exited one as `{ code: <number>, signal: null }`. An external
+ * `kill -9` (or any signal not routed through the poller's own `kill <id>`
+ * command, which sets `userKilled`) is NOT a completion: the close-handler's
+ * "done" branch is the `else` of the narrow failure check `code !== 0 &&
+ * signal == null`, so a signal-killed In Progress agent used to fall through
+ * to "done" and get force-moved to Human Review. This predicate lets the
+ * handler treat such an exit like the `isShuttingDown` interrupt — leave the
+ * ticket In Progress so the next poll cycle resumes it. The symmetric Merging
+ * case is handled separately by `shouldFinalizeMergedAgent` (UP-827).
+ */
+export function isExternalKillExit(
+  code: number | null,
+  signal: NodeJS.Signals | null,
+): boolean {
+  return code === null && signal !== null;
+}
+
 // ── XState chart (declarative documentation + viz) ────────────────────────────
 
 /**
