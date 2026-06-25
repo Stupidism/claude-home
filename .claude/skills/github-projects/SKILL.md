@@ -7,6 +7,8 @@ description: GitHub Projects (ProjectV2) ticket operations — workpad CRUD, sta
 
 **Prefer `mcp__github__*` MCP tools for everything that has one.** They handle auth and pagination automatically. Two operations don't have MCP equivalents (ProjectV2 state mutations, comment update/delete) — fall back to the GitHub GraphQL or REST API for those.
 
+> **MCP auth requirement (UP-811).** The github MCP server (`~/.claude.json` → `mcpServers.github`, Copilot-hosted) must be configured with a **classic** PAT carrying `repo` + `project` (+ `write:discussion`) scopes. A *fine-grained* PAT is locked to a single resource-owner, so it cannot write to repos/projects owned by a **different** account even when granted collaborator/Admin access — MCP writes (`add_issue_comment`, `issue_write`, `sub_issue_write`, ProjectV2 mutations) then return `403 Resource not accessible` or read the project as `null`. If you hit that, the token (not the code) is wrong: swap it for a classic PAT of the account that holds the cross-repo collaborator grants.
+
 GitHub Projects = ProjectV2. State lives in a single-select field (default `Status`) on a Project that the Issue is added to; comments and labels live on the backing Issue inside its repo.
 
 ## Environment
