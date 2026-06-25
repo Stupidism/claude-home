@@ -1,5 +1,5 @@
 {
-  "_comment": "Example trial GitHub Projects board (UP-795 §3.6). Copy to config/boards/sy.json and fill in real values. The synthetic `SY` prefix distinguishes Symphony tickets from the GitHub issue numbering they wrap — Symphony surfaces them as SY-<issue_number>. Fill in githubProjects.projectNumber after creating the ProjectV2 on the team org; AC2 validation (UP-799) is gated on this.",
+  "_comment": "Example trial GitHub Projects board (UP-795 §3.6). Copy to config/boards/sy.json and fill in real values. The synthetic `SY` prefix distinguishes Symphony tickets from the GitHub issue numbering they wrap — Symphony surfaces them as SY-<issue_number>. Fill in githubProjects.projectNumber after creating the ProjectV2 on the team org; AC2 validation (UP-799) is gated on this. IMPORTANT: githubProjects.states.* values are matched against the ProjectV2 Status field options by EXACT, case-sensitive name. The values below are the GitHub Roadmap-template defaults (note `TODO`, `In progress`, `Human review`). If your project's Status options use different names or casing, edit these values to match the actual options exactly — a mismatch makes fetchTicketsByState silently return empty.",
   "teamId": "SY",
   "name": "SY",
   "ticketPrefix": "SY",
@@ -12,9 +12,9 @@
     "statusField": "Status",
     "states": {
       "backlog": "Backlog",
-      "todo": "Todo",
-      "inProgress": "In Progress",
-      "humanReview": "Human Review",
+      "todo": "TODO",
+      "inProgress": "In progress",
+      "humanReview": "Human review",
       "rework": "Rework",
       "merging": "Merging",
       "done": "Done",
